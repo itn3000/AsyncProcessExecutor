@@ -103,5 +103,50 @@ namespace AsyncProcessExecutor.Test
                 AsyncProcessUtil.ExecuteProcessAsync(procName, null).Wait();
             });
         }
+        [TestCase]
+        public void TestExecuteAsyncInput()
+        {
+            var procName = "findstr";
+            var arg = "hogehoge";
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+            {
+                procName = "grep";
+            }
+            var stdout = new System.Text.StringBuilder();
+            var ret = AsyncProcessUtil.ExecuteProcessAsync(procName, arg,
+                onOutput: (str) =>
+                {
+                    stdout.Append(str);
+                },
+                inputCallback: (tw) =>
+                {
+                    tw.WriteLine("hogehogehoge");
+                }).Result;
+            Assert.IsTrue(stdout.ToString().Trim() == "hogehogehoge");
+            Console.WriteLine($"output is '{stdout.ToString()}'");
+        }
+        [TestCase]
+        public void TestExecuteAsyncManyInput()
+        {
+            var procName = "findstr";
+            var arg = "hogehoge";
+            var stdout = new List<string>();
+            var ret = AsyncProcessUtil.ExecuteProcessAsync(procName, arg,
+                onOutput: (str) =>
+                {
+                    Console.WriteLine($"output '{str}'");
+                    stdout.Add(str);
+                },
+                inputCallback: (tw) =>
+                {
+                    for (int i = 0; i < 100; i++)
+                    {
+                        Console.WriteLine($"input line{i}");
+                        tw.WriteLine($"hogehogehoge{i}");
+                    }
+                }).Result;
+            // insert blank line when procss finish
+            Assert.AreEqual(100 + 1, stdout.Count());
+        }
     }
 }
