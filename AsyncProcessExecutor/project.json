@@ -1,6 +1,9 @@
 ﻿{
   "version": "1.0.0-*",
   "title": "Asynchronous Process Executing Library",
+  "authors": [
+    "itn3000"
+  ],
 
   "dependencies": {
     "NETStandard.Library": "1.6.0"
