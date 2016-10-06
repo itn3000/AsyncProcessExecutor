@@ -1,5 +1,6 @@
 ﻿{
   "version": "1.0.0-*",
+  "title": "Asynchronous Process Executing Library",
 
   "dependencies": {
     "NETStandard.Library": "1.6.0"
@@ -17,7 +18,8 @@
 
     ],
     "licenseUrl": "https://opensource.org/licenses/MIT",
-    "releaseNotes": "https://github.com/itn3000/AsyncProcessExecutor/wiki/ReleaseNotes"
+    "releaseNotes": "https://github.com/itn3000/AsyncProcessExecutor/wiki/ReleaseNotes",
+    "projectUrl": "https://github.com/itn3000/AsyncProcessExecutor/"
   },
 
   "frameworks": {
