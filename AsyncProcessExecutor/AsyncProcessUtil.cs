@@ -11,6 +11,38 @@ namespace AsyncProcessExecutor
     using System.IO;
     public static class AsyncProcessUtil
     {
+        static ProcessStartInfo CreateStartInfo(
+            string fileName
+            , string arg
+            , bool createNoWindow
+            , Action<TextWriter> inputCallback
+            , Encoding outputEncoding
+            , IDictionary<string, string> env)
+        {
+            var pi = new ProcessStartInfo(fileName, arg);
+            pi.CreateNoWindow = createNoWindow;
+            pi.UseShellExecute = false;
+            pi.RedirectStandardError = true;
+            pi.RedirectStandardOutput = true;
+            pi.RedirectStandardInput = inputCallback != null;
+            if (outputEncoding != null)
+            {
+                pi.StandardErrorEncoding = outputEncoding;
+                pi.StandardOutputEncoding = outputEncoding;
+            }
+            if (env != null)
+            {
+                foreach (var kv in env)
+                {
+#if NET45
+                    pi.EnvironmentVariables[kv.Key] = kv.Value;
+#else
+                    pi.Environment[kv.Key] = kv.Value;
+#endif
+                }
+            }
+            return pi;
+        }
         /// <summary>
         /// Execute process asynchronously
         /// </summary>
@@ -37,69 +69,67 @@ namespace AsyncProcessExecutor
             , IDictionary<string, string> env = null
             )
         {
-            var pi = new ProcessStartInfo(fileName, arg);
-            pi.CreateNoWindow = createNoWindow;
-            pi.UseShellExecute = false;
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardOutput = true;
-            if (outputEncoding != null)
-            {
-                pi.StandardErrorEncoding = outputEncoding;
-                pi.StandardOutputEncoding = outputEncoding;
-            }
-            if (env != null)
-            {
-                foreach (var kv in env)
-                {
-#if NET45
-                    pi.EnvironmentVariables[kv.Key] = kv.Value;
-#else
-                    pi.Environment[kv.Key] = kv.Value;
-#endif
-                }
-            }
+            var pi = CreateStartInfo(fileName, arg, createNoWindow, inputCallback, outputEncoding, env);
             using (var proc = new Process())
             using (var sem = new SemaphoreSlim(0, 1))
             using (ctoken.Register(() => sem.Release()))
             {
-                proc.StartInfo = pi;
-                proc.EnableRaisingEvents = true;
-                if (onOutput != null)
+                try
                 {
-                    proc.OutputDataReceived += (sender, ev) =>
+                    proc.StartInfo = pi;
+                    proc.EnableRaisingEvents = true;
+                    if (onOutput != null)
                     {
-                        onOutput(ev.Data);
-                    };
-                }
-                if (onErrorOutput != null)
-                {
-                    proc.ErrorDataReceived += (sender, ev) =>
+                        proc.OutputDataReceived += (sender, ev) =>
+                        {
+                            onOutput(ev.Data);
+                        };
+                    }
+                    if (onErrorOutput != null)
                     {
-                        onErrorOutput(ev.Data);
+                        proc.ErrorDataReceived += (sender, ev) =>
+                        {
+                            onErrorOutput(ev.Data);
+                        };
+                    }
+                    proc.Exited += (sender, ev) =>
+                    {
+                        sem.Release();
                     };
+                    proc.Start();
+                    proc.BeginErrorReadLine();
+                    proc.BeginOutputReadLine();
+                    if (inputCallback != null)
+                    {
+                        await Task.Run(() =>
+                        {
+                            inputCallback(proc.StandardInput);
+                        }).ConfigureAwait(false);
+                        proc.StandardInput.Dispose();
+                    }
+                    await sem.WaitAsync().ConfigureAwait(false);
+                    if (proc.HasExited)
+                    {
+                        return proc.ExitCode;
+                    }
+                    else
+                    {
+                        proc.CancelErrorRead();
+                        proc.CancelOutputRead();
+                        if (!leaveProcess)
+                        {
+                            proc.Kill();
+                        }
+                        return -1;
+                    }
                 }
-                proc.Exited += (sender, ev) =>
+                catch
                 {
-                    sem.Release();
-                };
-                proc.Start();
-                proc.BeginErrorReadLine();
-                proc.BeginOutputReadLine();
-                inputCallback?.Invoke(proc.StandardInput);
-                await sem.WaitAsync().ConfigureAwait(false);
-                if (proc.HasExited)
-                {
-                    return proc.ExitCode;
-                }
-                else
-                {
-                    proc.CancelErrorRead();
-                    proc.CancelOutputRead();
-                    if (!leaveProcess)
+                    if (!leaveProcess && !proc.HasExited)
                     {
                         proc.Kill();
                     }
-                    return -1;
+                    throw;
                 }
             }
         }
