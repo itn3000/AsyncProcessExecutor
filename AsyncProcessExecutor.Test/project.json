@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0-*",
+
+  "dependencies": {
+    "AsyncProcessExecutor": "1.0.0-*",
+    "NUnit": "3.5.0",
+    "NUnit3TestAdapter": "3.4.1"
+  },
+
+  "frameworks": {
+    "net46": {
+      "dependencies": {
+      },
+      "imports": [
+        "portable-net45"
+      ]
+    }
+  }
+}

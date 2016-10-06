@@ -1,0 +1,42 @@
+﻿{
+  "version": "1.0.0-*",
+
+  "dependencies": {
+    "NETStandard.Library": "1.6.0"
+  },
+  "packOptions": {
+    "owners": [
+      "itn3000"
+    ],
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/itn3000/AsyncProcessExecutor/"
+    },
+    "summary": "library for executing process asynchronously",
+    "tags": [
+
+    ],
+    "licenseUrl": "https://opensource.org/licenses/MIT",
+    "releaseNotes": "https://github.com/itn3000/AsyncProcessExecutor/wiki/ReleaseNotes"
+  },
+
+  "frameworks": {
+    "netstandard1.3": {
+      "dependencies": {
+        "System.Diagnostics.Process": "4.1.0"
+      },
+      "buildOptions": {
+        "define": [
+          "NETSTANDARD1_3"
+        ]
+      }
+    },
+    "net45": {
+      "buildOptions": {
+        "define": [
+          "NET45"
+        ]
+      }
+    }
+  }
+}
