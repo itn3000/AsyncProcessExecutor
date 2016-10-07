@@ -94,7 +94,13 @@ namespace AsyncProcessExecutor
                     }
                     proc.Exited += (sender, ev) =>
                     {
-                        sem.Release();
+                        try
+                        {
+                            sem.Release();
+                        }
+                        catch
+                        {
+                        }
                     };
                     proc.Start();
                     proc.BeginErrorReadLine();
@@ -130,6 +136,113 @@ namespace AsyncProcessExecutor
                         proc.Kill();
                     }
                     throw;
+                }
+            }
+        }
+        public static async Task<int> ExecuteProcessAsyncBinary(string fileName
+            , string arg
+            , Action<Stream> inputCallback = null
+            , Action<byte[]> onOutput = null
+            , Action<byte[]> onOutputError = null
+            , CancellationToken ctoken = default(CancellationToken)
+            , bool createNoWindow = true
+            , bool leaveProcess = false
+            , IDictionary<string, string> env = null
+            , int bufferSize = 4096)
+        {
+            var pi = CreateStartInfo(fileName, arg, createNoWindow, null, null, env);
+            pi.RedirectStandardError = onOutputError != null;
+            pi.RedirectStandardInput = inputCallback != null;
+            pi.RedirectStandardOutput = onOutput != null;
+            using (var proc = new Process())
+            using (var sem = new SemaphoreSlim(0, 1))
+            using (ctoken.Register(() => sem.Release()))
+            {
+                try
+                {
+                    proc.StartInfo = pi;
+                    proc.Exited += (sender, e) =>
+                    {
+                        try
+                        {
+                            sem.Release();
+                        }
+                        catch
+                        {
+                        }
+                    };
+                    proc.EnableRaisingEvents = true;
+                    proc.Start();
+                    var inputTask = Task.Run(async () =>
+                    {
+                        await Task.FromResult(0).ConfigureAwait(false);
+                        if (inputCallback != null)
+                        {
+                            inputCallback(proc.StandardInput.BaseStream);
+                            proc.StandardInput.Dispose();
+                        }
+                    });
+                    var outputTask = Task.Run(async () =>
+                    {
+                        if (onOutput != null)
+                        {
+                            await ReadStreamUntilCancel(proc.StandardOutput.BaseStream, onOutput, bufferSize, ctoken).ConfigureAwait(false);
+                        }
+                    });
+                    var errorOutTask = Task.Run(async () =>
+                    {
+                        if (onOutputError != null)
+                        {
+                            await ReadStreamUntilCancel(proc.StandardError.BaseStream, onOutputError, bufferSize, ctoken).ConfigureAwait(false);
+                        }
+                    });
+                    await sem.WaitAsync().ConfigureAwait(false);
+                    await Task.WhenAll(inputTask, outputTask, errorOutTask).ConfigureAwait(false);
+                    if (proc.HasExited)
+                    {
+                        return proc.ExitCode;
+                    }
+                    else
+                    {
+                        return -1;
+                    }
+                }
+                finally
+                {
+                    if(!leaveProcess && !proc.HasExited)
+                    {
+                        proc.Kill();
+                    }
+                }
+            }
+        }
+        static async Task ReadStreamUntilCancel(Stream stm, Action<byte[]> callBack, int bufferSize, CancellationToken ctoken)
+        {
+            if (callBack != null)
+            {
+                var buf = new byte[bufferSize];
+                try
+                {
+                    while (!ctoken.IsCancellationRequested)
+                    {
+                        var bytesread = await stm.ReadAsync(buf, 0, bufferSize, ctoken).ConfigureAwait(false);
+                        if (bytesread <= 0)
+                        {
+                            break;
+                        }
+                        callBack(buf.Take(bytesread).ToArray());
+                    }
+                }
+                catch (AggregateException e)
+                {
+                    if (e.InnerException is OperationCanceledException)
+                    {
+                        return;
+                    }
+                    else
+                    {
+                        throw;
+                    }
                 }
             }
         }

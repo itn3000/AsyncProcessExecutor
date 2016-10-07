@@ -1,8 +1,10 @@
 {
-  "version": "1.0.0-*",
+  "version": "1.1.0-*",
 
   "dependencies": {
-    "AsyncProcessExecutor": "1.0.0-*",
+    "AsyncProcessExecutor": {
+      "target": "project"
+    },
     "NUnit": "3.5.0",
     "NUnit3TestAdapter": "3.4.1"
   },
