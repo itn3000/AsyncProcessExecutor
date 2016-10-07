@@ -94,7 +94,13 @@ namespace AsyncProcessExecutor
                     }
                     proc.Exited += (sender, ev) =>
                     {
-                        sem.Release();
+                        try
+                        {
+                            sem.Release();
+                        }
+                        catch
+                        {
+                        }
                     };
                     proc.Start();
                     proc.BeginErrorReadLine();
@@ -157,7 +163,13 @@ namespace AsyncProcessExecutor
                     proc.StartInfo = pi;
                     proc.Exited += (sender, e) =>
                     {
-                        sem.Release();
+                        try
+                        {
+                            sem.Release();
+                        }
+                        catch
+                        {
+                        }
                     };
                     proc.EnableRaisingEvents = true;
                     proc.Start();
