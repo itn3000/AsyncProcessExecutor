@@ -22,8 +22,9 @@ Install-Package AsyncProcessExecutor
 add following entry in "dependencies" section
 
 ```
-"AsyncProcessExecutor": "1.0.0-*"
+"AsyncProcessExecutor": "[package version]-*"
 ```
+available package version can be checked in [NuGet page](https://www.nuget.org/packages/AsyncProcessExecutor/)
 
 ## Usage
 
