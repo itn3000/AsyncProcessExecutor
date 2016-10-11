@@ -246,5 +246,32 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg, bool createNoWindow, IDictionary<string,string> env, CancellationToken ctoken = default(CancellationToken))
+        {
+            var newProc = StartProcess(fileName, arg, createNoWindow, env, async (stm, token) =>
+                {
+                    await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
+                }, ctoken);
+            newProc.Exited += (code) =>
+            {
+                t.Dispose();
+            };
+            return newProc;
+        }
+        public static AsyncProcessContext StartProcess(
+            string fileName
+            , string arguments
+            , bool createNoWindow
+            , IDictionary<string, string> env
+            , Func<Stream, CancellationToken, Task> inputCallback
+            , CancellationToken ctoken = default(CancellationToken))
+        {
+            var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
+            pi.RedirectStandardError = true;
+            pi.RedirectStandardInput = true;
+            pi.RedirectStandardOutput = true;
+            var ret = new AsyncProcessContext(pi, ctoken, inputCallback);
+            return ret;
+        }
     }
 }
