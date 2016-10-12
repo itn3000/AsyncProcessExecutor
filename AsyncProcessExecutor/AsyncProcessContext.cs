@@ -108,7 +108,13 @@ namespace AsyncProcessExecutor
                 m_TokenCancelledRegistration = ctoken.Register(() =>
                 {
                     m_Finished.Set();
-                    m_Process.Kill();
+                    try
+                    {
+                        m_Process.Kill();
+                    }
+                    catch
+                    {
+                    }
                 });
 
                 proc.Start();

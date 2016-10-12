@@ -131,9 +131,15 @@ namespace AsyncProcessExecutor
                 }
                 catch
                 {
-                    if (!leaveProcess && !proc.HasExited)
+                    try
                     {
-                        proc.Kill();
+                        if (!leaveProcess && !proc.HasExited)
+                        {
+                            proc.Kill();
+                        }
+                    }
+                    catch
+                    {
                     }
                     throw;
                 }
