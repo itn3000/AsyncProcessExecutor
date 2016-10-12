@@ -88,7 +88,7 @@ namespace AsyncProcessExecutor.Test
             Assert.AreEqual(0x1, resultBinary[5]);
             Console.WriteLine($"resultlength = {resultBinary.Count}");
         }
-        [TestCase]
+        [TestCase, Timeout(1500)]
         public void TestExecuteAsyncBinaryCancel()
         {
             var procName = "cmd.exe";

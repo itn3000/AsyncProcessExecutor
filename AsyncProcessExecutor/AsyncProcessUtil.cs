@@ -209,7 +209,7 @@ namespace AsyncProcessExecutor
                 }
                 finally
                 {
-                    if(!leaveProcess && !proc.HasExited)
+                    if (!leaveProcess && !proc.HasExited)
                     {
                         proc.Kill();
                     }
@@ -246,12 +246,16 @@ namespace AsyncProcessExecutor
                 }
             }
         }
-        public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg, bool createNoWindow, IDictionary<string,string> env, CancellationToken ctoken = default(CancellationToken))
+        public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
+            , bool createNoWindow = true
+            , IDictionary<string, string> env = null
+            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+            , CancellationToken ctoken = default(CancellationToken))
         {
-            var newProc = StartProcess(fileName, arg, createNoWindow, env, async (stm, token) =>
-                {
-                    await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
-                }, ctoken);
+            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
+                  {
+                      await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
+                  }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
             newProc.Exited += (code) =>
             {
                 t.Dispose();
@@ -261,16 +265,17 @@ namespace AsyncProcessExecutor
         public static AsyncProcessContext StartProcess(
             string fileName
             , string arguments
-            , bool createNoWindow
-            , IDictionary<string, string> env
-            , Func<Stream, CancellationToken, Task> inputCallback
+            , bool createNoWindow = true
+            , IDictionary<string, string> env = null
+            , Func<Stream, CancellationToken, Task> inputCallback = null
+            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
             , CancellationToken ctoken = default(CancellationToken))
         {
             var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
             pi.RedirectStandardError = true;
             pi.RedirectStandardInput = true;
             pi.RedirectStandardOutput = true;
-            var ret = new AsyncProcessContext(pi, ctoken, inputCallback);
+            var ret = new AsyncProcessContext(pi, ctoken, inputCallback, errorOutputCallback);
             return ret;
         }
     }

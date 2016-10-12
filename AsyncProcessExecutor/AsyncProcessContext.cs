@@ -12,6 +12,7 @@ namespace AsyncProcessExecutor
     {
         public event Action<int> Exited;
         Task m_InputTask;
+        Task m_ErrorOutputTask;
         public ManualResetEventSlim m_Finished = new ManualResetEventSlim(false);
         public Stream StandardInput
         {
@@ -79,7 +80,7 @@ namespace AsyncProcessExecutor
         }
         CancellationToken m_Token;
         CancellationTokenRegistration m_TokenCancelledRegistration;
-        public AsyncProcessContext(ProcessStartInfo psi, CancellationToken ctoken, Func<Stream, CancellationToken, Task> input = null)
+        public AsyncProcessContext(ProcessStartInfo psi, CancellationToken ctoken, Func<Stream, CancellationToken, Task> input = null, Func<Stream, CancellationToken, Task> errorOut = null)
         {
             m_Token = ctoken;
 #if NET45
@@ -115,9 +116,39 @@ namespace AsyncProcessExecutor
                 {
                     m_InputTask = Task.Run(async () =>
                     {
-                        await input(proc.StandardInput.BaseStream, ctoken).ConfigureAwait(false);
-                        proc.StandardInput.Dispose();
+                        try
+                        {
+                            await input(proc.StandardInput.BaseStream, ctoken).ConfigureAwait(false);
+                            proc.StandardInput.Dispose();
+                        }
+                        catch (AggregateException e)
+                        {
+                            if (!(e.InnerException is OperationCanceledException))
+                            {
+                                throw;
+                            }
+                        }
+                        catch (OperationCanceledException e)
+                        {
+                        }
                     });
+                }
+                if (errorOut != null)
+                {
+                    try
+                    {
+                        m_ErrorOutputTask = errorOut(proc.StandardError.BaseStream, ctoken);
+                    }
+                    catch (AggregateException e)
+                    {
+                        if (!(e.Flatten().InnerException is OperationCanceledException))
+                        {
+                            throw;
+                        }
+                    }
+                    catch (OperationCanceledException e)
+                    {
+                    }
                 }
             }
             catch
@@ -127,34 +158,41 @@ namespace AsyncProcessExecutor
             }
         }
         Process m_Process;
-        public async Task<int> WaitAsync(Func<Stream,CancellationToken, Task> onOutput = null, Func<Stream, CancellationToken, Task> onErrorOutput = null)
+        public async Task<int> WaitAsync(Func<Stream,CancellationToken, Task> onOutput = null)
         {
-            await Task.WhenAll(m_InputTask != null ? m_InputTask : Task.FromResult<int>(0), Task.Run(async () =>
-            {
-                if (onOutput != null)
+            await Task.WhenAll(m_InputTask != null ? m_InputTask : Task.FromResult<int>(0)
+                , m_ErrorOutputTask != null ? m_ErrorOutputTask : Task.FromResult<int>(0)
+                , Task.Run(async () =>
                 {
-                    await onOutput(this.StandardOutput, m_Token).ConfigureAwait(false);
-                }
-            })
-            ,
-            Task.Run(async () =>
-            {
-                if (onErrorOutput != null)
+                    if (onOutput != null)
+                    {
+                        try
+                        {
+                            await onOutput(this.StandardOutput, m_Token).ConfigureAwait(false);
+                        }
+                        catch (AggregateException e)
+                        {
+                            if (!(e.InnerException is OperationCanceledException))
+                            {
+                                throw;
+                            }
+                        }
+                        catch (OperationCanceledException e)
+                        {
+                        }
+                    }
+                })
+                ,
+                Task.Run(() =>
                 {
-                    await onErrorOutput(this.StandardError, m_Token).ConfigureAwait(false);
-                }
-            })
-            ,
-            Task.Run(() =>
-            {
-                try
-                {
-                    m_Finished.Wait(m_Token);
-                }
-                catch (TaskCanceledException e)
-                {
-                }
-            })).ConfigureAwait(false);
+                    try
+                    {
+                        m_Finished.Wait(m_Token);
+                    }
+                    catch (OperationCanceledException e)
+                    {
+                    }
+                })).ConfigureAwait(false);
             return this.ResultCode;
         }
 
