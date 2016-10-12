@@ -11,38 +11,6 @@ namespace AsyncProcessExecutor
     using System.IO;
     public static class AsyncProcessUtil
     {
-        static ProcessStartInfo CreateStartInfo(
-            string fileName
-            , string arg
-            , bool createNoWindow
-            , Action<TextWriter> inputCallback
-            , Encoding outputEncoding
-            , IDictionary<string, string> env)
-        {
-            var pi = new ProcessStartInfo(fileName, arg);
-            pi.CreateNoWindow = createNoWindow;
-            pi.UseShellExecute = false;
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardOutput = true;
-            pi.RedirectStandardInput = inputCallback != null;
-            if (outputEncoding != null)
-            {
-                pi.StandardErrorEncoding = outputEncoding;
-                pi.StandardOutputEncoding = outputEncoding;
-            }
-            if (env != null)
-            {
-                foreach (var kv in env)
-                {
-#if NET45
-                    pi.EnvironmentVariables[kv.Key] = kv.Value;
-#else
-                    pi.Environment[kv.Key] = kv.Value;
-#endif
-                }
-            }
-            return pi;
-        }
         /// <summary>
         /// Execute process asynchronously
         /// </summary>
@@ -145,6 +113,20 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        /// <summary>
+        /// execute process,handling process input/output as binary
+        /// </summary>
+        /// <param name="fileName">path to process binary file</param>
+        /// <param name="arg">process arguments</param>
+        /// <param name="inputCallback">call when process begin,passed write-only stream</param>
+        /// <param name="onOutput">callback to get standard output data</param>
+        /// <param name="onOutputError">callback to get standard error data</param>
+        /// <param name="ctoken">if you want to cancel process, pass the CancellationToken</param>
+        /// <param name="createNoWindow">flag for creating window(affected only windows)</param>
+        /// <param name="leaveProcess">flag for not killing process when cancelled</param>
+        /// <param name="env">additional environments for process</param>
+        /// <param name="bufferSize">buffer size for output</param>
+        /// <returns>process exit code, -1 when cancelled</returns>
         public static async Task<int> ExecuteProcessAsyncBinary(string fileName
             , string arg
             , Action<Stream> inputCallback = null
@@ -222,6 +204,93 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        /// <summary>
+        /// start process and creating process context object
+        /// </summary>
+        /// <param name="fileName"></param>
+        /// <param name="arguments"></param>
+        /// <param name="createNoWindow"></param>
+        /// <param name="env"></param>
+        /// <param name="inputCallback"></param>
+        /// <param name="errorOutputCallback"></param>
+        /// <param name="ctoken"></param>
+        /// <returns></returns>
+        public static AsyncProcessContext StartProcess(
+            string fileName
+            , string arguments
+            , bool createNoWindow = true
+            , IDictionary<string, string> env = null
+            , Func<Stream, CancellationToken, Task> inputCallback = null
+            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+            , CancellationToken ctoken = default(CancellationToken))
+        {
+            var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
+            pi.RedirectStandardError = true;
+            pi.RedirectStandardInput = true;
+            pi.RedirectStandardOutput = true;
+            var ret = new AsyncProcessContext(pi, ctoken, inputCallback, errorOutputCallback);
+            return ret;
+        }
+        /// <summary>
+        /// extension method for fluent process execution,all standard output in AsyncProcessContext is redirected to next process standard input
+        /// </summary>
+        /// <remarks>previous process will be killed when new process finished</remarks>
+        /// <param name="t"></param>
+        /// <param name="fileName">next process binary path</param>
+        /// <param name="arg">next process argument</param>
+        /// <param name="createNoWindow">flag for creating window</param>
+        /// <param name="env">additional environment variables for process</param>
+        /// <param name="errorOutputCallback">standard error callback for next process</param>
+        /// <param name="ctoken">used for cancel process</param>
+        /// <returns>next process AsyncProcessContext</returns>
+        public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
+            , bool createNoWindow = true
+            , IDictionary<string, string> env = null
+            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+            , CancellationToken ctoken = default(CancellationToken))
+        {
+            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
+            {
+                await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
+            }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
+            newProc.Exited += (code) =>
+            {
+                t.Dispose();
+            };
+            return newProc;
+        }
+        static ProcessStartInfo CreateStartInfo(
+            string fileName
+            , string arg
+            , bool createNoWindow
+            , Action<TextWriter> inputCallback
+            , Encoding outputEncoding
+            , IDictionary<string, string> env)
+        {
+            var pi = new ProcessStartInfo(fileName, arg);
+            pi.CreateNoWindow = createNoWindow;
+            pi.UseShellExecute = false;
+            pi.RedirectStandardError = true;
+            pi.RedirectStandardOutput = true;
+            pi.RedirectStandardInput = inputCallback != null;
+            if (outputEncoding != null)
+            {
+                pi.StandardErrorEncoding = outputEncoding;
+                pi.StandardOutputEncoding = outputEncoding;
+            }
+            if (env != null)
+            {
+                foreach (var kv in env)
+                {
+#if NET45
+                    pi.EnvironmentVariables[kv.Key] = kv.Value;
+#else
+                    pi.Environment[kv.Key] = kv.Value;
+#endif
+                }
+            }
+            return pi;
+        }
         static async Task ReadStreamUntilCancel(Stream stm, Action<byte[]> callBack, int bufferSize, CancellationToken ctoken)
         {
             if (callBack != null)
@@ -251,38 +320,6 @@ namespace AsyncProcessExecutor
                     }
                 }
             }
-        }
-        public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
-            , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
-            , CancellationToken ctoken = default(CancellationToken))
-        {
-            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
-                  {
-                      await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
-                  }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
-            newProc.Exited += (code) =>
-            {
-                t.Dispose();
-            };
-            return newProc;
-        }
-        public static AsyncProcessContext StartProcess(
-            string fileName
-            , string arguments
-            , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> inputCallback = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
-            , CancellationToken ctoken = default(CancellationToken))
-        {
-            var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardInput = true;
-            pi.RedirectStandardOutput = true;
-            var ret = new AsyncProcessContext(pi, ctoken, inputCallback, errorOutputCallback);
-            return ret;
         }
     }
 }

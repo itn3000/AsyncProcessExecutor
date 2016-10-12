@@ -13,14 +13,11 @@ namespace AsyncProcessExecutor
         public event Action<int> Exited;
         Task m_InputTask;
         Task m_ErrorOutputTask;
-        public ManualResetEventSlim m_Finished = new ManualResetEventSlim(false);
-        public Stream StandardInput
-        {
-            get
-            {
-                return m_Process.StandardInput.BaseStream;
-            }
-        }
+        ManualResetEventSlim m_Finished = new ManualResetEventSlim(false);
+        /// <summary>
+        /// process standard output stream
+        /// </summary>
+        /// <remarks>exception thrown when accessing this member after disposed</remarks>
         public Stream StandardOutput
         {
             get
@@ -28,14 +25,64 @@ namespace AsyncProcessExecutor
                 return m_Process.StandardOutput.BaseStream;
             }
         }
-        public Stream StandardError
+        /// <summary>
+        /// wait process finish and get result code
+        /// </summary>
+        /// <param name="onOutput">callback for standard output, do nothing if null</param>
+        /// <returns>process result code,-1 if cancelled</returns>
+        public async Task<int> WaitAsync(Func<Stream, CancellationToken, Task> onOutput = null)
+        {
+            await Task.WhenAll(m_InputTask != null ? m_InputTask : Task.FromResult<int>(0)
+                , m_ErrorOutputTask != null ? m_ErrorOutputTask : Task.FromResult<int>(0)
+                , Task.Run(async () =>
+                {
+                    if (onOutput != null)
+                    {
+                        try
+                        {
+                            await onOutput(this.StandardOutput, m_Token).ConfigureAwait(false);
+                        }
+                        catch (AggregateException e)
+                        {
+                            if (!(e.InnerException is OperationCanceledException))
+                            {
+                                throw;
+                            }
+                        }
+                        catch (OperationCanceledException e)
+                        {
+                        }
+                    }
+                })
+                ,
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        m_Finished.Wait(m_Token);
+                    }
+                    catch (OperationCanceledException e)
+                    {
+                    }
+                })).ConfigureAwait(false);
+            return this.ResultCode;
+        }
+
+        Stream StandardInput
+        {
+            get
+            {
+                return m_Process.StandardInput.BaseStream;
+            }
+        }
+        Stream StandardError
         {
             get
             {
                 return m_Process.StandardError.BaseStream;
             }
         }
-        public CancellationToken Token
+        CancellationToken Token
         {
             get
             {
@@ -46,14 +93,14 @@ namespace AsyncProcessExecutor
         {
             get
             {
-                return m_Process.StartInfo.FileName;
+                return m_StartInfo.FileName;
             }
         }
         public string Argument
         {
             get
             {
-                return m_Process.StartInfo.Arguments;
+                return m_StartInfo.Arguments;
             }
         }
         static IDictionary<string, string> m_Environments;
@@ -80,7 +127,8 @@ namespace AsyncProcessExecutor
         }
         CancellationToken m_Token;
         CancellationTokenRegistration m_TokenCancelledRegistration;
-        public AsyncProcessContext(ProcessStartInfo psi, CancellationToken ctoken, Func<Stream, CancellationToken, Task> input = null, Func<Stream, CancellationToken, Task> errorOut = null)
+        ProcessStartInfo m_StartInfo;
+        internal AsyncProcessContext(ProcessStartInfo psi, CancellationToken ctoken, Func<Stream, CancellationToken, Task> input = null, Func<Stream, CancellationToken, Task> errorOut = null)
         {
             m_Token = ctoken;
 #if NET45
@@ -91,6 +139,7 @@ namespace AsyncProcessExecutor
 #else
             m_Environments = psi.Environment;
 #endif
+            m_StartInfo = psi;
             var proc = new Process();
             try
             {
@@ -164,44 +213,6 @@ namespace AsyncProcessExecutor
             }
         }
         Process m_Process;
-        public async Task<int> WaitAsync(Func<Stream,CancellationToken, Task> onOutput = null)
-        {
-            await Task.WhenAll(m_InputTask != null ? m_InputTask : Task.FromResult<int>(0)
-                , m_ErrorOutputTask != null ? m_ErrorOutputTask : Task.FromResult<int>(0)
-                , Task.Run(async () =>
-                {
-                    if (onOutput != null)
-                    {
-                        try
-                        {
-                            await onOutput(this.StandardOutput, m_Token).ConfigureAwait(false);
-                        }
-                        catch (AggregateException e)
-                        {
-                            if (!(e.InnerException is OperationCanceledException))
-                            {
-                                throw;
-                            }
-                        }
-                        catch (OperationCanceledException e)
-                        {
-                        }
-                    }
-                })
-                ,
-                Task.Run(() =>
-                {
-                    try
-                    {
-                        m_Finished.Wait(m_Token);
-                    }
-                    catch (OperationCanceledException e)
-                    {
-                    }
-                })).ConfigureAwait(false);
-            return this.ResultCode;
-        }
-
 #region IDisposable Support
         private bool disposedValue = false; // 重複する呼び出しを検出するには
 
