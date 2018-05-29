@@ -95,7 +95,7 @@ namespace AsyncProcessExecutor.Test
                 }
             });
         }
-        [TestCase, Timeout(1500)]
+        [TestCase]
         public void TestPipeCommandCancel()
         {
             using (var csrc = new CancellationTokenSource(1000))
