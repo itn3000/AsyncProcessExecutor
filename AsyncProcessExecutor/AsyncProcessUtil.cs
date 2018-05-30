@@ -9,6 +9,7 @@ namespace AsyncProcessExecutor
     using System.Diagnostics;
     using System.Threading;
     using System.IO;
+    using System.IO.Pipelines;
     public static class AsyncProcessUtil
     {
         /// <summary>
@@ -204,32 +205,19 @@ namespace AsyncProcessExecutor
                 }
             }
         }
-        /// <summary>
-        /// start process and creating process context object
-        /// </summary>
-        /// <param name="fileName"></param>
-        /// <param name="arguments"></param>
-        /// <param name="createNoWindow"></param>
-        /// <param name="env"></param>
-        /// <param name="inputCallback"></param>
-        /// <param name="errorOutputCallback"></param>
-        /// <param name="ctoken"></param>
-        /// <returns></returns>
-        public static AsyncProcessContext StartProcess(
-            string fileName
-            , string arguments
-            , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> inputCallback = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
-            , CancellationToken ctoken = default(CancellationToken))
+        public static AsyncProcessContext StartProcess(string fileName,
+            string arguments,
+            bool createNoWindow = true, 
+            IReadOnlyDictionary<string, string> env = null,
+            PipeReader stdin = null,
+            PipeWriter stderr = null,
+            CancellationToken token = default(CancellationToken))
         {
-            var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardInput = true;
+            var pi = CreateStartInfo(fileName, arguments, createNoWindow, stdin, null, env);
+            pi.RedirectStandardError = stderr != null;
+            pi.RedirectStandardInput = stdin != null;
             pi.RedirectStandardOutput = true;
-            var ret = new AsyncProcessContext(pi, ctoken, inputCallback, errorOutputCallback);
-            return ret;
+            return new AsyncProcessContext(pi, token, stdin, stderr);
         }
         /// <summary>
         /// extension method for fluent process execution,all standard output in AsyncProcessContext is redirected to next process standard input
@@ -243,20 +231,30 @@ namespace AsyncProcessExecutor
         /// <param name="errorOutputCallback">standard error callback for next process</param>
         /// <param name="ctoken">used for cancel process</param>
         /// <returns>next process AsyncProcessContext</returns>
+        // public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
+        //     , bool createNoWindow = true
+        //     , IDictionary<string, string> env = null
+        //     , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+        //     , CancellationToken ctoken = default(CancellationToken))
+        // {
+        //     var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
+        //     {
+        //         // await t.StandardOutput.(stm, 4096, token).ConfigureAwait(false);
+        //     }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
+        //     newProc.Exited += (code) =>
+        //     {
+        //         t.Dispose();
+        //     };
+        //     return newProc;
+        // }
         public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
             , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+            , IReadOnlyDictionary<string, string> env = null
+            , PipeWriter stderr = null
             , CancellationToken ctoken = default(CancellationToken))
         {
-            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
-            {
-                await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
-            }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
-            newProc.Exited += (code) =>
-            {
-                t.Dispose();
-            };
+            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, stdin: t.StandardOutput, stderr: stderr, token: ctoken);
+            newProc.Exited += (exitCode) => t.Dispose();
             return newProc;
         }
         static ProcessStartInfo CreateStartInfo(
@@ -287,6 +285,29 @@ namespace AsyncProcessExecutor
 #else
                     pi.Environment[kv.Key] = kv.Value;
 #endif
+                }
+            }
+            return pi;
+        }
+        static ProcessStartInfo CreateStartInfo(
+            string fileName
+            , string arg
+            , bool createNoWindow
+            , PipeReader stdin
+            , Encoding outputEncoding
+            , IReadOnlyDictionary<string, string> env)
+        {
+            var pi = new ProcessStartInfo(fileName, arg);
+            pi.CreateNoWindow = createNoWindow;
+            pi.UseShellExecute = false;
+            pi.RedirectStandardError = true;
+            pi.RedirectStandardOutput = true;
+            pi.RedirectStandardInput = stdin != null;
+            if (env != null)
+            {
+                foreach (var kv in env)
+                {
+                    pi.Environment[kv.Key] = kv.Value;
                 }
             }
             return pi;
