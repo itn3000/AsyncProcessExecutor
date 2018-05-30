@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.IO.Pipelines;
 
 namespace AsyncProcessExecutor.Test
 {
@@ -37,6 +38,7 @@ namespace AsyncProcessExecutor.Test
             var ret = AsyncProcessUtil.ExecuteProcessAsyncBinary(procName, arguments).Result;
             Assert.AreEqual(1, ret);
         }
+
         [TestCase]
         public void TestExecuteAsyncBinaryOutput()
         {
@@ -48,11 +50,10 @@ namespace AsyncProcessExecutor.Test
                 arg = "-c \"echo abcde\"";
             }
             var resultBinary = new List<byte>();
-            var ret = AsyncProcessUtil.ExecuteProcessAsyncBinary(procName, arg
-                , onOutput: (b) =>
-                {
-                    resultBinary.AddRange(b);
-                }).Result;
+            var stdout = new Pipe();
+            var ret = AsyncProcessUtil.ExecuteProcessAsyncBinary(procName, arg, stdout: stdout.Writer).Result;
+            resultBinary.AddRange(stdout.Reader.GetAllBytes().Result);
+
             Assert.AreEqual('a', (char)resultBinary[0]);
             Assert.AreEqual('b', (char)resultBinary[1]);
             Assert.AreEqual('c', (char)resultBinary[2]);
@@ -71,15 +72,17 @@ namespace AsyncProcessExecutor.Test
             }
             var resultBinary = new List<byte>();
             var inputData = Encoding.UTF8.GetBytes("abcde").Concat(new byte[] { 0x1 }).ToArray();
-            var ret = AsyncProcessUtil.ExecuteProcessAsyncBinary(procName, arg
-                , inputCallback: (stm) =>
+            var stdin = new Pipe();
+            var stdout = new Pipe();
+            Task.WaitAll(
+                AsyncProcessUtil.ExecuteProcessAsyncBinary(procName, arg, stdout: stdout.Writer, stdin: stdin.Reader),
+                Task.Run(async () =>
                 {
-                    stm.Write(inputData, 0, inputData.Count());
-                }
-                , onOutput: (b) =>
-                {
-                    resultBinary.AddRange(b);
-                }).Result;
+                    await stdin.Writer.WriteAsync(new Memory<byte>(inputData));
+                    stdin.Writer.Complete();
+                })
+            );
+            resultBinary.AddRange(stdout.Reader.GetAllBytes().Result);
             Assert.AreEqual('a', (char)resultBinary[0]);
             Assert.AreEqual('b', (char)resultBinary[1]);
             Assert.AreEqual('c', (char)resultBinary[2]);
@@ -91,8 +94,8 @@ namespace AsyncProcessExecutor.Test
         [TestCase]
         public void TestExecuteAsyncBinaryCancel()
         {
-            var procName = "cmd.exe";
-            var arguments = "/c \"timeout /T 5\"";
+            var procName = "powershell";
+            var arguments = "Start-Sleep -Seconds 5";
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
             {
                 procName = "bash";
@@ -100,10 +103,21 @@ namespace AsyncProcessExecutor.Test
             }
             using (var csrc = new CancellationTokenSource(TimeSpan.FromSeconds(1)))
             {
-                var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments
-                    , ctoken: csrc.Token)
-                    .Result;
-                Assert.AreEqual(-1, retCode);
+                try
+                {
+                    var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments
+                        , ctoken: csrc.Token)
+                        .Result;
+                    Assert.Fail("should not be reached");
+                }
+                catch (AggregateException ae)
+                {
+                    Assert.IsTrue(ae.Flatten().InnerExceptions.Any(x => x is TaskCanceledException));
+                }
+                catch (TaskCanceledException)
+                {
+
+                }
             }
         }
     }
