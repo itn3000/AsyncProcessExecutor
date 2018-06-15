@@ -57,10 +57,14 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        public Task<int> WaitExit()
+        {
+            return m_ProcessTask.Task;
+        }
         CancellationToken m_Token;
         CancellationTokenRegistration m_TokenCancelledRegistration;
         ProcessStartInfo m_StartInfo;
-        TaskCompletionSource<int> m_ProcessTask;
+        TaskCompletionSource<int> m_ProcessTask = new TaskCompletionSource<int>(TaskContinuationOptions.RunContinuationsAsynchronously);
         Task m_InternalTask;
         Task StartOutputTask()
         {
@@ -150,11 +154,53 @@ namespace AsyncProcessExecutor
                 return Task.CompletedTask;
             }
         }
+        void InputTask()
+        {
+            if (m_StandardInput != null)
+            {
+                while (true)
+                {
+                    if (m_StandardInput.TryRead(out var std))
+                    {
+                        if (std.IsCompleted && std.Buffer.IsEmpty)
+                        {
+                            break;
+                        }
+                        if (!std.Buffer.IsEmpty)
+                        {
+                            foreach (var rbuf in std.Buffer)
+                            {
+#if NETCOREAPP2_1
+                                        m_Process.StandardInput.BaseStream.Write(rbuf.Span);
+#else
+                                var data = rbuf.ToArray();
+                                m_Process.StandardInput.BaseStream.Write(data, 0, data.Length);
+#endif
+                            }
+                            m_StandardInput.AdvanceTo(std.Buffer.End);
+                        }
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+        }
         async Task StartTask()
         {
-            if (!m_Process.Start())
+            try
             {
-                throw new Exception("failed to start process");
+                if (!m_Process.Start())
+                {
+                    m_ProcessTask.TrySetException(new InvalidOperationException($"failed to start process(exe={m_StartInfo.FileName},arg={m_StartInfo.Arguments}"));
+                    return;
+                }
+            }
+            catch (Exception e)
+            {
+                m_ProcessTask.TrySetException(e);
+                return;
             }
             await Task.WhenAll(
                 Task.Run(() =>
@@ -166,33 +212,7 @@ namespace AsyncProcessExecutor
                         {
                             csrc.Cancel();
                         };
-                        while (true)
-                        {
-                            if (m_StandardInput.TryRead(out var std))
-                            {
-                                if (std.IsCompleted && std.Buffer.IsEmpty)
-                                {
-                                    break;
-                                }
-                                if (!std.Buffer.IsEmpty)
-                                {
-                                    foreach (var rbuf in std.Buffer)
-                                    {
-#if NETCOREAPP2_1
-                                        m_Process.StandardInput.BaseStream.Write(rbuf.Span);
-#else
-                                        var data = rbuf.ToArray();
-                                        m_Process.StandardInput.BaseStream.Write(data, 0, data.Length);
-#endif
-                                    }
-                                    m_StandardInput.AdvanceTo(std.Buffer.End);
-                                }
-                            }
-                            else
-                            {
-                                break;
-                            }
-                        }
+                        InputTask();
                         combined.Token.WaitHandle.WaitOne();
                         if (m_Token.IsCancellationRequested)
                         {

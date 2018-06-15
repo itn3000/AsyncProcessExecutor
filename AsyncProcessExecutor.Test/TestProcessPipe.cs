@@ -31,67 +31,96 @@ namespace AsyncProcessExecutor.Test
             {
                 using (var mstm = new MemoryStream())
                 {
-                    var exitCode = res.WaitAsync(async (stm, ctoken) =>
-                    {
-                        var buf = new byte[4096];
-                        while(true)
+                    Task.WaitAll(
+                        Task.Run(async () =>
                         {
-                            var bytesread = await stm.ReadAsync(buf, 0, buf.Count()).ConfigureAwait(false);
-                            var str = string.Join(":", buf.Take(bytesread).Select(x => x.ToString("X2")));
-                            if(bytesread <= 0)
+                            while (true)
                             {
-                                break;
+                                var readresult = await res.StandardOutput.ReadAsync().ConfigureAwait(false);
+                                if (!readresult.Buffer.IsEmpty)
+                                {
+                                    foreach (var buf in readresult.Buffer)
+                                    {
+                                        var ar = buf.ToArray();
+                                        mstm.Write(ar, 0, ar.Length);
+                                    }
+                                }
+                                if (readresult.Buffer.IsEmpty && readresult.IsCompleted)
+                                {
+                                    break;
+                                }
                             }
-                            Console.WriteLine($"{str}");
-                        }
-                    }).Result;
-                    Assert.AreEqual(0, exitCode);
+                            Console.WriteLine($"{Encoding.UTF8.GetString(mstm.ToArray())}");
+                        }),
+                        Task.Run(async () =>
+                        {
+                            var retcode = await res.WaitExit();
+                            Assert.AreEqual(0, retcode);
+                        })
+                    );
                 }
             }
         }
         [TestCase]
-        public void TestPipeErrorOut()
+        public async Task TestPipeErrorOut()
         {
             var procname1 = "powershell";
             var arg1 = "\"[Console]::Error.WriteLine(\\\"hogehoge\\\")\"";
-            using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1, errorOutputCallback: async (stm, ctoken) =>
-             {
-                 using (var mstm = new MemoryStream())
-                 {
-                     await stm.CopyToAsync(mstm).ConfigureAwait(false);
-                     var str = Encoding.Default.GetString(mstm.ToArray());
-                     Assert.IsTrue(str.Contains("hogehoge"));
-                 }
-             }
-                ))
+            using (var ctx = AsyncProcessUtil.StartProcess(procname1, arg1))
+            using (var mstm = new MemoryStream())
             {
-                var exitCode = proc.WaitAsync().Result;
+                while (true)
+                {
+                    var readResult = await ctx.StandardOutput.ReadAsync();
+                    if (!readResult.Buffer.IsEmpty)
+                    {
+                        foreach (var buf in readResult.Buffer)
+                        {
+                            mstm.Write(buf.Span);
+                        }
+                    }
+                    if (readResult.IsCompleted && readResult.Buffer.IsEmpty)
+                    {
+                        break;
+                    }
+                }
+                var exitCode = await ctx.WaitExit();
                 Assert.AreEqual(0, exitCode);
             }
+            // using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1, errorOutputCallback: async (stm, ctoken) =>
+            //  {
+            //      using (var mstm = new MemoryStream())
+            //      {
+            //          await stm.CopyToAsync(mstm).ConfigureAwait(false);
+            //          var str = Encoding.Default.GetString(mstm.ToArray());
+            //          Assert.IsTrue(str.Contains("hogehoge"));
+            //      }
+            //  }
+            //     ))
+            // {
+            //     var exitCode = proc.WaitAsync().Result;
+            //     Assert.AreEqual(0, exitCode);
+            // }
 
         }
         [TestCase]
         public void TestPipeCommandNotFound()
         {
-            var procname1 = "powershell";
+            var procname1 = "powershel";
             var arg1 = "\"Write-Host hogehoge\"";
             Assert.Throws<System.ComponentModel.Win32Exception>(() =>
             {
-                using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1
-                    , inputCallback: async (stm, ctoken) =>
-                    {
-                        await Task.FromResult(0).ConfigureAwait(false);
-                    }, errorOutputCallback: async (stm, ctoken) =>
-                    {
-                        using (var mstm = new MemoryStream())
-                        {
-                            await stm.CopyToAsync(mstm, 4096, ctoken).ConfigureAwait(false);
-                            Console.WriteLine($"{Encoding.Default.GetString(mstm.ToArray())}");
-                        }
-                    }).DoNext("hogehoge", ""))
+                using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1))
                 {
-                    var exitCode = proc.WaitAsync().Result;
-                    Assert.AreEqual(-1, exitCode);
+                    try
+                    {
+                        proc.WaitExit().Wait();
+                        Assert.Fail("should not be reached");
+                    }
+                    catch (AggregateException ae)
+                    {
+                        throw ae.InnerException;
+                    }
                 }
             });
         }
@@ -99,10 +128,16 @@ namespace AsyncProcessExecutor.Test
         public void TestPipeCommandCancel()
         {
             using (var csrc = new CancellationTokenSource(1000))
-            using (var proc = AsyncProcessUtil.StartProcess("powershell", "\"Start-Sleep 5\"", ctoken: csrc.Token))
+            using (var proc = AsyncProcessUtil.StartProcess("powershell", "\"Start-Sleep 5\"", token: csrc.Token))
             {
-                var code = proc.WaitAsync().Result;
-                Assert.AreEqual(-1, code);
+                try
+                {
+                    var code = proc.WaitExit().Result;
+                }
+                catch (TaskCanceledException e)
+                {
+
+                }
             }
         }
     }

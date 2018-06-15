@@ -10,8 +10,115 @@ namespace AsyncProcessExecutor
     using System.Threading;
     using System.IO;
     using System.IO.Pipelines;
+    using System.Buffers;
     public static class AsyncProcessUtil
     {
+        static async Task OutputTask(Process proc, PipeWriter output, CancellationToken token)
+        {
+            if (output == null)
+            {
+                return;
+            }
+            var buf = ArrayPool<byte>.Shared.Rent(4096);
+            try
+            {
+                long total = 0;
+                while (true)
+                {
+                    var bytesread = await proc.StandardOutput.BaseStream.ReadAsync(buf, 0, 4096, token).ConfigureAwait(false);
+                    if (bytesread <= 0)
+                    {
+                        return;
+                    }
+                    output.Write(new Span<byte>(buf, 0, bytesread));
+                    total += bytesread;
+                    if (total > 4096)
+                    {
+                        await output.FlushAsync(token).ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buf);
+                output.Complete();
+            }
+        }
+        static async Task InputTask(Process proc, PipeReader stdin, CancellationToken token)
+        {
+            if (stdin == null)
+            {
+                return;
+            }
+            while (true)
+            {
+                var readresult = await stdin.ReadAsync(token).ConfigureAwait(false);
+                if (!readresult.Buffer.IsEmpty)
+                {
+                    foreach (var rbuf in readresult.Buffer)
+                    {
+#if NETCOREAPP_2_1
+                        proc.StandardInput.BaseStream.Write(rbuf.Span);
+#else
+                        var buf = ArrayPool<byte>.Shared.Rent(rbuf.Length);
+                        try
+                        {
+                            rbuf.CopyTo(new Memory<byte>(buf));
+                            proc.StandardInput.BaseStream.Write(buf, 0, rbuf.Length);
+                        }
+                        finally
+                        {
+                            ArrayPool<byte>.Shared.Return(buf);
+                        }
+#endif
+                    }
+                }
+            }
+        }
+        /// execute process asynchronously with binary output
+        public static async Task<int> ExecuteProcessAsyncBinary(string fileName,
+            string args,
+            bool createNoWindow = true,
+            IReadOnlyDictionary<string, string> env = null,
+            PipeWriter stdout = null,
+            PipeWriter stderr = null,
+            PipeReader stdin = null,
+            CancellationToken token = default(CancellationToken)
+        )
+        {
+            var si = CreateStartInfo(fileName, args, createNoWindow, stdin, Encoding.UTF8, env);
+            si.RedirectStandardError = stderr != null;
+            si.RedirectStandardOutput = stdout != null;
+            si.RedirectStandardInput = stdin != null;
+            using (var proc = new Process())
+            using (var csrc = new CancellationTokenSource())
+            using (var combined = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                proc.StartInfo = si;
+                proc.EnableRaisingEvents = true;
+                proc.Exited += (sender, ev) =>
+                {
+                    csrc.Cancel();
+                };
+                await Task.WhenAll(
+                    OutputTask(proc, stdout, token),
+                    OutputTask(proc, stderr, token),
+                    InputTask(proc, stdin, token)
+                    ,
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            combined.Token.WaitHandle.WaitOne();
+                        }
+                        catch
+                        {
+                        }
+                    })
+                );
+                return proc.HasExited ? proc.ExitCode : -1;
+            }
+        }
         /// <summary>
         /// Execute process asynchronously
         /// </summary>
@@ -29,16 +136,20 @@ namespace AsyncProcessExecutor
         public static async Task<int> ExecuteProcessAsync(string fileName
             , string arg
             , Encoding outputEncoding = null
-            , Action<TextWriter> inputCallback = null
-            , Action<string> onOutput = null
-            , Action<string> onErrorOutput = null
+            , PipeWriter stdout = null
+            , PipeWriter stderr = null
+            , PipeReader stdin = null
             , CancellationToken ctoken = default(CancellationToken)
             , bool createNoWindow = false
             , bool leaveProcess = false
             , IDictionary<string, string> env = null
             )
         {
-            var pi = CreateStartInfo(fileName, arg, createNoWindow, inputCallback, outputEncoding, env);
+            outputEncoding = outputEncoding ?? Encoding.UTF8;
+            var pi = CreateStartInfo(fileName, arg, createNoWindow, stdin, outputEncoding, env);
+            pi.RedirectStandardInput = stdin != null;
+            pi.RedirectStandardError = stderr != null;
+            pi.RedirectStandardOutput = stdout != null;
             using (var proc = new Process())
             using (var sem = new SemaphoreSlim(0, 1))
             using (ctoken.Register(() => sem.Release()))
@@ -47,18 +158,40 @@ namespace AsyncProcessExecutor
                 {
                     proc.StartInfo = pi;
                     proc.EnableRaisingEvents = true;
-                    if (onOutput != null)
+                    if (stdout != null)
                     {
                         proc.OutputDataReceived += (sender, ev) =>
                         {
-                            onOutput(ev.Data);
+                            var len = outputEncoding.GetByteCount(ev.Data);
+                            var buf = ArrayPool<byte>.Shared.Rent(len);
+                            try
+                            {
+                                var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                stdout.Write(new Span<byte>(buf, 0, bc));
+                                stdout.FlushAsync().GetAwaiter().GetResult();
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(buf);
+                            }
                         };
                     }
-                    if (onErrorOutput != null)
+                    if (stderr != null)
                     {
                         proc.ErrorDataReceived += (sender, ev) =>
                         {
-                            onErrorOutput(ev.Data);
+                            var len = outputEncoding.GetByteCount(ev.Data);
+                            var buf = ArrayPool<byte>.Shared.Rent(len);
+                            try
+                            {
+                                var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                stderr.Write(new Span<byte>(buf, 0, bc));
+                                stderr.FlushAsync().GetAwaiter().GetResult();
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(buf);
+                            }
                         };
                     }
                     proc.Exited += (sender, ev) =>
@@ -74,23 +207,20 @@ namespace AsyncProcessExecutor
                     proc.Start();
                     proc.BeginErrorReadLine();
                     proc.BeginOutputReadLine();
-                    if (inputCallback != null)
+                    
+                    while(true)
                     {
-                        await Task.Run(() =>
-                        {
-                            inputCallback(proc.StandardInput);
-                        }).ConfigureAwait(false);
-                        proc.StandardInput.Dispose();
+                        var readresult = 
                     }
                     await sem.WaitAsync().ConfigureAwait(false);
+                    proc.CancelErrorRead();
+                    proc.CancelOutputRead();
                     if (proc.HasExited)
                     {
                         return proc.ExitCode;
                     }
                     else
                     {
-                        proc.CancelErrorRead();
-                        proc.CancelOutputRead();
                         if (!leaveProcess)
                         {
                             proc.Kill();
@@ -128,86 +258,9 @@ namespace AsyncProcessExecutor
         /// <param name="env">additional environments for process</param>
         /// <param name="bufferSize">buffer size for output</param>
         /// <returns>process exit code, -1 when cancelled</returns>
-        public static async Task<int> ExecuteProcessAsyncBinary(string fileName
-            , string arg
-            , Action<Stream> inputCallback = null
-            , Action<byte[]> onOutput = null
-            , Action<byte[]> onOutputError = null
-            , CancellationToken ctoken = default(CancellationToken)
-            , bool createNoWindow = true
-            , bool leaveProcess = false
-            , IDictionary<string, string> env = null
-            , int bufferSize = 4096)
-        {
-            var pi = CreateStartInfo(fileName, arg, createNoWindow, null, null, env);
-            pi.RedirectStandardError = onOutputError != null;
-            pi.RedirectStandardInput = inputCallback != null;
-            pi.RedirectStandardOutput = onOutput != null;
-            using (var proc = new Process())
-            using (var sem = new SemaphoreSlim(0, 1))
-            using (ctoken.Register(() => sem.Release()))
-            {
-                try
-                {
-                    proc.StartInfo = pi;
-                    proc.Exited += (sender, e) =>
-                    {
-                        try
-                        {
-                            sem.Release();
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    proc.EnableRaisingEvents = true;
-                    proc.Start();
-                    var inputTask = Task.Run(async () =>
-                    {
-                        await Task.FromResult(0).ConfigureAwait(false);
-                        if (inputCallback != null)
-                        {
-                            inputCallback(proc.StandardInput.BaseStream);
-                            proc.StandardInput.Dispose();
-                        }
-                    });
-                    var outputTask = Task.Run(async () =>
-                    {
-                        if (onOutput != null)
-                        {
-                            await ReadStreamUntilCancel(proc.StandardOutput.BaseStream, onOutput, bufferSize, ctoken).ConfigureAwait(false);
-                        }
-                    });
-                    var errorOutTask = Task.Run(async () =>
-                    {
-                        if (onOutputError != null)
-                        {
-                            await ReadStreamUntilCancel(proc.StandardError.BaseStream, onOutputError, bufferSize, ctoken).ConfigureAwait(false);
-                        }
-                    });
-                    await sem.WaitAsync().ConfigureAwait(false);
-                    await Task.WhenAll(inputTask, outputTask, errorOutTask).ConfigureAwait(false);
-                    if (proc.HasExited)
-                    {
-                        return proc.ExitCode;
-                    }
-                    else
-                    {
-                        return -1;
-                    }
-                }
-                finally
-                {
-                    if (!leaveProcess && !proc.HasExited)
-                    {
-                        proc.Kill();
-                    }
-                }
-            }
-        }
         public static AsyncProcessContext StartProcess(string fileName,
             string arguments,
-            bool createNoWindow = true, 
+            bool createNoWindow = true,
             IReadOnlyDictionary<string, string> env = null,
             PipeReader stdin = null,
             PipeWriter stderr = null,
@@ -257,38 +310,38 @@ namespace AsyncProcessExecutor
             newProc.Exited += (exitCode) => t.Dispose();
             return newProc;
         }
-        static ProcessStartInfo CreateStartInfo(
-            string fileName
-            , string arg
-            , bool createNoWindow
-            , Action<TextWriter> inputCallback
-            , Encoding outputEncoding
-            , IDictionary<string, string> env)
-        {
-            var pi = new ProcessStartInfo(fileName, arg);
-            pi.CreateNoWindow = createNoWindow;
-            pi.UseShellExecute = false;
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardOutput = true;
-            pi.RedirectStandardInput = inputCallback != null;
-            if (outputEncoding != null)
-            {
-                pi.StandardErrorEncoding = outputEncoding;
-                pi.StandardOutputEncoding = outputEncoding;
-            }
-            if (env != null)
-            {
-                foreach (var kv in env)
-                {
-#if NET45
-                    pi.EnvironmentVariables[kv.Key] = kv.Value;
-#else
-                    pi.Environment[kv.Key] = kv.Value;
-#endif
-                }
-            }
-            return pi;
-        }
+        //         static ProcessStartInfo CreateStartInfo(
+        //             string fileName
+        //             , string arg
+        //             , bool createNoWindow
+        //             , Action<TextWriter> inputCallback
+        //             , Encoding outputEncoding
+        //             , IDictionary<string, string> env)
+        //         {
+        //             var pi = new ProcessStartInfo(fileName, arg);
+        //             pi.CreateNoWindow = createNoWindow;
+        //             pi.UseShellExecute = false;
+        //             pi.RedirectStandardError = true;
+        //             pi.RedirectStandardOutput = true;
+        //             pi.RedirectStandardInput = inputCallback != null;
+        //             if (outputEncoding != null)
+        //             {
+        //                 pi.StandardErrorEncoding = outputEncoding;
+        //                 pi.StandardOutputEncoding = outputEncoding;
+        //             }
+        //             if (env != null)
+        //             {
+        //                 foreach (var kv in env)
+        //                 {
+        // #if NET45
+        //                     pi.EnvironmentVariables[kv.Key] = kv.Value;
+        // #else
+        //                     pi.Environment[kv.Key] = kv.Value;
+        // #endif
+        //                 }
+        //             }
+        //             return pi;
+        //         }
         static ProcessStartInfo CreateStartInfo(
             string fileName
             , string arg
