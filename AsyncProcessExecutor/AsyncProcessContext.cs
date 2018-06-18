@@ -66,112 +66,126 @@ namespace AsyncProcessExecutor
         ProcessStartInfo m_StartInfo;
         TaskCompletionSource<int> m_ProcessTask = new TaskCompletionSource<int>(TaskContinuationOptions.RunContinuationsAsynchronously);
         Task m_InternalTask;
-        Task StartOutputTask()
+        async Task StartOutputTask()
         {
             if (m_StandardOutputPipe != null)
             {
-                return Task.Run(async () =>
+                var buf = ArrayPool<byte>.Shared.Rent(1024);
+                try
                 {
-                    var buf = ArrayPool<byte>.Shared.Rent(1024);
-                    try
+                    while (true)
                     {
-                        while (!m_Token.IsCancellationRequested)
-                        {
-                            var bytesread = await m_Process.StandardOutput.BaseStream.ReadAsync(buf, 0, 1024);
-                            if (bytesread == 0 && m_Process.HasExited)
-                            {
-                                break;
-                            }
-                            await m_StandardOutputPipe.WriteAsync(buf, m_Token).ConfigureAwait(false);
-                            await m_StandardOutputPipe.FlushAsync(m_Token).ConfigureAwait(false);
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(buf);
-                    }
-                }).ContinueWith(t =>
-                {
-                    if (m_StandardOutputPipe != null)
-                    {
-                        if (t.IsFaulted)
-                        {
-                            m_StandardOutputPipe.Complete(t.Exception);
-                        }
-                        else
-                        {
-                            m_StandardOutputPipe.Complete();
-                        }
-                    }
-                });
-            }
-            else
-            {
-                return Task.CompletedTask;
-            }
-        }
-        Task StartErrorOutputTask()
-        {
-            if (m_StandardErrorPipe != null)
-            {
-                return Task.Run(async () =>
-                {
-                    var buf = ArrayPool<byte>.Shared.Rent(1024);
-                    try
-                    {
-                        while (!m_Token.IsCancellationRequested)
-                        {
-                            var bytesread = await m_Process.StandardError.BaseStream.ReadAsync(buf, 0, 1024);
-                            if (bytesread == 0 && m_Process.HasExited)
-                            {
-                                break;
-                            }
-                            await m_StandardErrorPipe.WriteAsync(buf, m_Token).ConfigureAwait(false);
-                            await m_StandardErrorPipe.FlushAsync(m_Token).ConfigureAwait(false);
-                        }
-                    }
-                    finally
-                    {
-                        ArrayPool<byte>.Shared.Return(buf);
-                    }
-                }).ContinueWith(t =>
-                {
-                    if (m_StandardErrorPipe != null)
-                    {
-                        if (t.IsFaulted)
-                        {
-                            m_StandardErrorPipe.Complete(t.Exception);
-                        }
-                        else
-                        {
-                            m_StandardErrorPipe.Complete();
-                        }
-                    }
-                });
-            }
-            else
-            {
-                return Task.CompletedTask;
-            }
-        }
-        void InputTask()
-        {
-            if (m_StandardInput != null)
-            {
-                while (true)
-                {
-                    if (m_StandardInput.TryRead(out var std))
-                    {
-                        if (std.IsCompleted && std.Buffer.IsEmpty)
+                        var bytesread = await m_Process.StandardOutput.BaseStream.ReadAsync(buf, 0, 1024).ConfigureAwait(false);
+                        if (bytesread == 0 && m_Process.HasExited)
                         {
                             break;
                         }
+                        await m_StandardOutputPipe.WriteAsync(new Memory<byte>(buf, 0, bytesread), m_Token).ConfigureAwait(false);
+                        await m_StandardOutputPipe.FlushAsync(m_Token).ConfigureAwait(false);
+                    }
+                }
+                catch (TaskCanceledException e)
+                {
+                    m_StandardOutputPipe.Complete(e);
+                }
+                catch (Exception e)
+                {
+                    m_StandardOutputPipe.Complete(e);
+                    throw;
+                }
+                finally
+                {
+                    m_StandardOutputPipe.Complete();
+                    ArrayPool<byte>.Shared.Return(buf);
+                }
+            }
+        }
+        async Task StartErrorOutputTask()
+        {
+            if (m_StandardErrorPipe != null)
+            {
+                var buf = ArrayPool<byte>.Shared.Rent(1024);
+                try
+                {
+                    while (true)
+                    {
+                        var bytesread = await m_Process.StandardError.BaseStream.ReadAsync(buf, 0, 1024, m_Token).ConfigureAwait(false);
+                        if (bytesread == 0 && m_Process.HasExited)
+                        {
+                            break;
+                        }
+                        if (bytesread != 0)
+                        {
+                            await m_StandardErrorPipe.WriteAsync(new Memory<byte>(buf, 0, bytesread), m_Token).ConfigureAwait(false);
+                            await m_StandardErrorPipe.FlushAsync(m_Token);
+                        }
+                    }
+                }
+                catch (TaskCanceledException e)
+                {
+                    m_StandardErrorPipe.Complete(e);
+                }
+                catch (Exception e)
+                {
+                    m_StandardErrorPipe.Complete(e);
+                    throw;
+                }
+                finally
+                {
+                    m_StandardErrorPipe.Complete();
+                    ArrayPool<byte>.Shared.Return(buf);
+                }
+                // return Task.Run(async () =>
+                // {
+                //     var buf = ArrayPool<byte>.Shared.Rent(1024);
+                //     try
+                //     {
+                //         while (!m_Token.IsCancellationRequested)
+                //         {
+                //             var bytesread = await m_Process.StandardError.BaseStream.ReadAsync(buf, 0, 1024);
+                //             if (bytesread == 0 && m_Process.HasExited)
+                //             {
+                //                 break;
+                //             }
+                //             await m_StandardErrorPipe.WriteAsync(new Memory<byte>(buf, 0, bytesread), m_Token).ConfigureAwait(false);
+                //             await m_StandardErrorPipe.FlushAsync(m_Token).ConfigureAwait(false);
+                //         }
+                //     }
+                //     finally
+                //     {
+                //         ArrayPool<byte>.Shared.Return(buf);
+                //     }
+                // }).ContinueWith(t =>
+                // {
+                //     if (m_StandardErrorPipe != null)
+                //     {
+                //         if (t.IsFaulted)
+                //         {
+                //             m_StandardErrorPipe.Complete(t.Exception);
+                //         }
+                //         else
+                //         {
+                //             m_StandardErrorPipe.Complete();
+                //         }
+                //     }
+                // });
+            }
+        }
+        async ValueTask InputTask()
+        {
+            if (m_StandardInput != null)
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var std = await m_StandardInput.ReadAsync(m_Token).ConfigureAwait(false);
                         if (!std.Buffer.IsEmpty)
                         {
                             foreach (var rbuf in std.Buffer)
                             {
 #if NETCOREAPP2_1
-                                        m_Process.StandardInput.BaseStream.Write(rbuf.Span);
+                            m_Process.StandardInput.BaseStream.Write(rbuf.Span);
 #else
                                 var data = rbuf.ToArray();
                                 m_Process.StandardInput.BaseStream.Write(data, 0, data.Length);
@@ -179,11 +193,25 @@ namespace AsyncProcessExecutor
                             }
                             m_StandardInput.AdvanceTo(std.Buffer.End);
                         }
+                        if (std.IsCompleted && std.Buffer.IsEmpty)
+                        {
+                            break;
+                        }
                     }
-                    else
-                    {
-                        break;
-                    }
+                }
+                catch (TaskCanceledException e)
+                {
+                    m_StandardInput.Complete(e);
+                    return;
+                }
+                catch (Exception e)
+                {
+                    m_StandardInput.Complete(e);
+                    throw;
+                }
+                finally
+                {
+                    m_Process.StandardInput.Dispose();
                 }
             }
         }
@@ -203,7 +231,7 @@ namespace AsyncProcessExecutor
                 return;
             }
             await Task.WhenAll(
-                Task.Run(() =>
+                Task.Run(async () =>
                 {
                     using (var csrc = new CancellationTokenSource())
                     using (var combined = CancellationTokenSource.CreateLinkedTokenSource(csrc.Token, m_Token))
@@ -212,7 +240,7 @@ namespace AsyncProcessExecutor
                         {
                             csrc.Cancel();
                         };
-                        InputTask();
+                        await InputTask().ConfigureAwait(false);
                         combined.Token.WaitHandle.WaitOne();
                         if (m_Token.IsCancellationRequested)
                         {
@@ -229,32 +257,18 @@ namespace AsyncProcessExecutor
                 if (t.IsFaulted)
                 {
                     m_ProcessTask.TrySetException(t.Exception);
+                    Exited?.Invoke(-1);
                 }
                 else if (t.IsCanceled)
                 {
                     m_ProcessTask.TrySetCanceled();
-                }
-            }).ContinueWith(t =>
-            {
-                if (t.IsFaulted)
-                {
-                    Exited?.Invoke(-1);
-                    throw new AggregateException(t.Exception);
-                }
-                else if (t.IsCanceled)
-                {
                     Exited?.Invoke(-2);
-                    throw new OperationCanceledException();
                 }
                 else
                 {
                     Exited?.Invoke(m_Process.ExitCode);
                 }
             }).ConfigureAwait(false);
-            if (Exited != null)
-            {
-                Exited(m_Process.ExitCode);
-            }
         }
         internal AsyncProcessContext(ProcessStartInfo psi, CancellationToken ctoken, PipeReader stdin, PipeWriter stderr)
         {

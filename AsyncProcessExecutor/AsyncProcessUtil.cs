@@ -13,7 +13,7 @@ namespace AsyncProcessExecutor
     using System.Buffers;
     public static class AsyncProcessUtil
     {
-        static async Task OutputTask(Process proc, PipeWriter output, CancellationToken token)
+        static async Task OutputTask(Process proc, PipeWriter output, Stream stm, CancellationToken token)
         {
             if (output == null)
             {
@@ -25,7 +25,7 @@ namespace AsyncProcessExecutor
                 long total = 0;
                 while (true)
                 {
-                    var bytesread = await proc.StandardOutput.BaseStream.ReadAsync(buf, 0, 4096, token).ConfigureAwait(false);
+                    var bytesread = await stm.ReadAsync(buf, 0, 4096, token).ConfigureAwait(false);
                     if (bytesread <= 0)
                     {
                         return;
@@ -66,14 +66,25 @@ namespace AsyncProcessExecutor
                             rbuf.CopyTo(new Memory<byte>(buf));
                             proc.StandardInput.BaseStream.Write(buf, 0, rbuf.Length);
                         }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"{e}");
+                            throw;
+                        }
                         finally
                         {
                             ArrayPool<byte>.Shared.Return(buf);
                         }
 #endif
                     }
+                    stdin.AdvanceTo(readresult.Buffer.End);
+                }
+                if(readresult.IsCompleted && readresult.Buffer.IsEmpty)
+                {
+                    break;
                 }
             }
+            proc.StandardInput.Close();
         }
         /// execute process asynchronously with binary output
         public static async Task<int> ExecuteProcessAsyncBinary(string fileName,
@@ -90,9 +101,10 @@ namespace AsyncProcessExecutor
             si.RedirectStandardError = stderr != null;
             si.RedirectStandardOutput = stdout != null;
             si.RedirectStandardInput = stdin != null;
+            si.UseShellExecute = false;
             using (var proc = new Process())
             using (var csrc = new CancellationTokenSource())
-            using (var combined = CancellationTokenSource.CreateLinkedTokenSource(token))
+            using (var combined = CancellationTokenSource.CreateLinkedTokenSource(token, csrc.Token))
             {
                 proc.StartInfo = si;
                 proc.EnableRaisingEvents = true;
@@ -100,15 +112,20 @@ namespace AsyncProcessExecutor
                 {
                     csrc.Cancel();
                 };
+                if(!proc.Start())
+                {
+                    throw new InvalidOperationException("executing process failed");
+                }
                 await Task.WhenAll(
-                    OutputTask(proc, stdout, token),
-                    OutputTask(proc, stderr, token),
-                    InputTask(proc, stdin, token)
+                    stdout != null ? OutputTask(proc, stdout, proc.StandardOutput.BaseStream, token) : Task.CompletedTask,
+                    stderr != null ? OutputTask(proc, stderr, proc.StandardError.BaseStream, token) : Task.CompletedTask,
+                    stdin != null ? InputTask(proc, stdin, token) : Task.CompletedTask
                     ,
-                    Task.Run(() =>
+                    Task.Run(async () =>
                     {
                         try
                         {
+                            await Task.Yield();
                             combined.Token.WaitHandle.WaitOne();
                         }
                         catch
@@ -142,7 +159,7 @@ namespace AsyncProcessExecutor
             , CancellationToken ctoken = default(CancellationToken)
             , bool createNoWindow = false
             , bool leaveProcess = false
-            , IDictionary<string, string> env = null
+            , IReadOnlyDictionary<string, string> env = null
             )
         {
             outputEncoding = outputEncoding ?? Encoding.UTF8;
@@ -205,16 +222,54 @@ namespace AsyncProcessExecutor
                         }
                     };
                     proc.Start();
-                    proc.BeginErrorReadLine();
-                    proc.BeginOutputReadLine();
-                    
-                    while(true)
+                    if (pi.RedirectStandardError)
                     {
-                        var readresult = 
+                        proc.BeginErrorReadLine();
+                    }
+                    if (pi.RedirectStandardOutput)
+                    {
+                        proc.BeginOutputReadLine();
+                    }
+                    if (stdin != null)
+                    {
+                        while (true)
+                        {
+                            var readresult = await stdin.ReadAsync().ConfigureAwait(false);
+                            if (!readresult.Buffer.IsEmpty)
+                            {
+                                foreach (var rbuf in readresult.Buffer)
+                                {
+                                    var stdinbuf = ArrayPool<byte>.Shared.Rent(rbuf.Length);
+                                    try
+                                    {
+                                        rbuf.CopyTo(new Memory<byte>(stdinbuf));
+                                        proc.StandardInput.BaseStream.Write(stdinbuf, 0, rbuf.Length);
+                                    }
+                                    finally
+                                    {
+                                        ArrayPool<byte>.Shared.Return(stdinbuf);
+                                    }
+                                }
+                            }
+                            if (readresult.IsCompleted && readresult.Buffer.IsEmpty)
+                            {
+                                break;
+                            }
+                            stdin.AdvanceTo(readresult.Buffer.End);
+                        }
+                        proc.StandardInput.Dispose();
                     }
                     await sem.WaitAsync().ConfigureAwait(false);
-                    proc.CancelErrorRead();
-                    proc.CancelOutputRead();
+                    if (pi.RedirectStandardError)
+                    {
+                        proc.CancelErrorRead();
+                        stderr.Complete();
+                    }
+                    if (pi.RedirectStandardOutput)
+                    {
+                        proc.CancelOutputRead();
+                        stdout.Complete();
+                    }
                     if (proc.HasExited)
                     {
                         return proc.ExitCode;
