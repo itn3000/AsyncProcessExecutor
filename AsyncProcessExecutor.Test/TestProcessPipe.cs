@@ -114,12 +114,17 @@ namespace AsyncProcessExecutor.Test
         [TestCase]
         public void TestPipeCommandCancel()
         {
+            var stdin = new Pipe();
+            var stdout = new Pipe();
+            var stderr = new Pipe();
+            stdin.Writer.Complete();
             using (var csrc = new CancellationTokenSource(1000))
-            using (var proc = AsyncProcessUtil.StartProcess("powershell", "\"Start-Sleep 5\"", token: csrc.Token))
+            using (var proc = AsyncProcessUtil.StartProcess("powershell", "\"Start-Sleep 5\"", token: csrc.Token, stdin: stdin.Reader, stderr: stderr.Writer))
             {
                 try
                 {
                     var code = proc.WaitExit().Result;
+                    Assert.Fail();
                 }
                 catch(AggregateException ae)
                 {

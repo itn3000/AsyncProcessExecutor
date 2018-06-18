@@ -79,7 +79,7 @@ namespace AsyncProcessExecutor
                     }
                     stdin.AdvanceTo(readresult.Buffer.End);
                 }
-                if(readresult.IsCompleted && readresult.Buffer.IsEmpty)
+                if (readresult.IsCompleted && readresult.Buffer.IsEmpty)
                 {
                     break;
                 }
@@ -112,7 +112,7 @@ namespace AsyncProcessExecutor
                 {
                     csrc.Cancel();
                 };
-                if(!proc.Start())
+                if (!proc.Start())
                 {
                     throw new InvalidOperationException("executing process failed");
                 }
@@ -179,17 +179,20 @@ namespace AsyncProcessExecutor
                     {
                         proc.OutputDataReceived += (sender, ev) =>
                         {
-                            var len = outputEncoding.GetByteCount(ev.Data);
-                            var buf = ArrayPool<byte>.Shared.Rent(len);
-                            try
+                            if (ev.Data != null)
                             {
-                                var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
-                                stdout.Write(new Span<byte>(buf, 0, bc));
-                                stdout.FlushAsync().GetAwaiter().GetResult();
-                            }
-                            finally
-                            {
-                                ArrayPool<byte>.Shared.Return(buf);
+                                var len = outputEncoding.GetByteCount(ev.Data);
+                                var buf = ArrayPool<byte>.Shared.Rent(len);
+                                try
+                                {
+                                    var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                    stdout.Write(new Span<byte>(buf, 0, bc));
+                                    stdout.FlushAsync().GetAwaiter().GetResult();
+                                }
+                                finally
+                                {
+                                    ArrayPool<byte>.Shared.Return(buf);
+                                }
                             }
                         };
                     }
@@ -197,17 +200,20 @@ namespace AsyncProcessExecutor
                     {
                         proc.ErrorDataReceived += (sender, ev) =>
                         {
-                            var len = outputEncoding.GetByteCount(ev.Data);
-                            var buf = ArrayPool<byte>.Shared.Rent(len);
-                            try
+                            if (ev.Data != null)
                             {
-                                var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
-                                stderr.Write(new Span<byte>(buf, 0, bc));
-                                stderr.FlushAsync().GetAwaiter().GetResult();
-                            }
-                            finally
-                            {
-                                ArrayPool<byte>.Shared.Return(buf);
+                                var len = outputEncoding.GetByteCount(ev.Data);
+                                var buf = ArrayPool<byte>.Shared.Rent(len);
+                                try
+                                {
+                                    var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                    stderr.Write(new Span<byte>(buf, 0, bc));
+                                    stderr.FlushAsync().GetAwaiter().GetResult();
+                                }
+                                finally
+                                {
+                                    ArrayPool<byte>.Shared.Return(buf);
+                                }
                             }
                         };
                     }
@@ -260,6 +266,7 @@ namespace AsyncProcessExecutor
                         proc.StandardInput.Dispose();
                     }
                     await sem.WaitAsync().ConfigureAwait(false);
+                    proc.WaitForExit();
                     if (pi.RedirectStandardError)
                     {
                         proc.CancelErrorRead();
@@ -365,38 +372,6 @@ namespace AsyncProcessExecutor
             newProc.Exited += (exitCode) => t.Dispose();
             return newProc;
         }
-        //         static ProcessStartInfo CreateStartInfo(
-        //             string fileName
-        //             , string arg
-        //             , bool createNoWindow
-        //             , Action<TextWriter> inputCallback
-        //             , Encoding outputEncoding
-        //             , IDictionary<string, string> env)
-        //         {
-        //             var pi = new ProcessStartInfo(fileName, arg);
-        //             pi.CreateNoWindow = createNoWindow;
-        //             pi.UseShellExecute = false;
-        //             pi.RedirectStandardError = true;
-        //             pi.RedirectStandardOutput = true;
-        //             pi.RedirectStandardInput = inputCallback != null;
-        //             if (outputEncoding != null)
-        //             {
-        //                 pi.StandardErrorEncoding = outputEncoding;
-        //                 pi.StandardOutputEncoding = outputEncoding;
-        //             }
-        //             if (env != null)
-        //             {
-        //                 foreach (var kv in env)
-        //                 {
-        // #if NET45
-        //                     pi.EnvironmentVariables[kv.Key] = kv.Value;
-        // #else
-        //                     pi.Environment[kv.Key] = kv.Value;
-        // #endif
-        //                 }
-        //             }
-        //             return pi;
-        //         }
         static ProcessStartInfo CreateStartInfo(
             string fileName
             , string arg
