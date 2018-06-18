@@ -131,7 +131,7 @@ namespace AsyncProcessExecutor.Test
                     ae = ae.Flatten();
                     Assert.IsTrue(ae.InnerExceptions.OfType<TaskCanceledException>().Any());
                 }
-                catch (TaskCanceledException e)
+                catch (TaskCanceledException)
                 {
 
                 }
