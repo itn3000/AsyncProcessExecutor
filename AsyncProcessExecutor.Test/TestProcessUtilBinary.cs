@@ -94,8 +94,8 @@ namespace AsyncProcessExecutor.Test
         [TestCase]
         public void TestExecuteAsyncBinaryCancel()
         {
-            var procName = "cmd.exe";
-            var arguments = "/c \"timeout /T 5\"";
+            var procName = "powershell";
+            var arguments = "Start-Sleep -Seconds 5";
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
             {
                 procName = "bash";
@@ -103,10 +103,21 @@ namespace AsyncProcessExecutor.Test
             }
             using (var csrc = new CancellationTokenSource(TimeSpan.FromSeconds(1)))
             {
-                var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments
-                    , ctoken: csrc.Token)
-                    .Result;
-                Assert.AreEqual(-1, retCode);
+                try
+                {
+                    var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments
+                        , ctoken: csrc.Token)
+                        .Result;
+                    Assert.Fail("should not be reached");
+                }
+                catch (AggregateException ae)
+                {
+                    Assert.IsTrue(ae.Flatten().InnerExceptions.Any(x => x is TaskCanceledException));
+                }
+                catch (TaskCanceledException)
+                {
+
+                }
             }
         }
     }

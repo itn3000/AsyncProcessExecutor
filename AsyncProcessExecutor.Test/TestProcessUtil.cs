@@ -45,8 +45,8 @@ namespace AsyncProcessExecutor.Test
         [TestCase]
         public void TestExecuteAsyncCancel()
         {
-            var procName = "cmd.exe";
-            var arguments = "/c \"ping -t 5 example.com\"";
+            var procName = "powershell.exe";
+            var arguments = "Start-Sleep -Seconds 5";
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
             {
                 procName = "bash";
@@ -55,8 +55,19 @@ namespace AsyncProcessExecutor.Test
             using (var csrc = new CancellationTokenSource(TimeSpan.FromSeconds(1)))
             {
                 var pipe = new Pipe();
-                var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments, stdout: pipe.Writer).Result;
-                Assert.AreEqual(-1, retCode);
+                try
+                {
+                    var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, arguments, ctoken: csrc.Token, stdout: pipe.Writer).Result;
+                    Assert.AreEqual(-1, retCode);
+                }
+                catch (AggregateException ae)
+                {
+                    Assert.IsTrue(ae.Flatten().InnerExceptions.OfType<TaskCanceledException>().Any());
+                }
+                catch (TaskCanceledException)
+                {
+
+                }
             }
         }
         [TestCase]
@@ -69,8 +80,19 @@ namespace AsyncProcessExecutor.Test
             }
             using (var csrc = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
             {
-                var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, "", ctoken: csrc.Token, createNoWindow: true).Result;
-                Assert.AreEqual(-1, retCode);
+                try
+                {
+                    var retCode = AsyncProcessUtil.ExecuteProcessAsync(procName, "", ctoken: csrc.Token, createNoWindow: true).Result;
+                    Assert.Fail("should not be reached");
+                }
+                catch (AggregateException ae)
+                {
+                    Assert.IsTrue(ae.Flatten().InnerExceptions.OfType<TaskCanceledException>().Any());
+                }
+                catch (TaskCanceledException)
+                {
+
+                }
             }
         }
         [TestCase]
@@ -138,7 +160,20 @@ namespace AsyncProcessExecutor.Test
                             {
                                 foreach (var rbuf in readresult.Buffer)
                                 {
+#if NETCOREAPP_2_1
                                     mstm.Write(rbuf.Span);
+#else
+                                    var data = ArrayPool<byte>.Shared.Rent(rbuf.Length);
+                                    try
+                                    {
+                                        rbuf.CopyTo(new Memory<byte>(data, 0, rbuf.Length));
+                                        mstm.Write(data, 0, rbuf.Length);
+                                    }
+                                    finally
+                                    {
+                                        ArrayPool<byte>.Shared.Return(data);
+                                    }
+#endif
                                 }
                                 stdout.Reader.AdvanceTo(readresult.Buffer.End);
                             }

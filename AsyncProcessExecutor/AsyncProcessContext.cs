@@ -62,7 +62,6 @@ namespace AsyncProcessExecutor
             return m_ProcessTask.Task;
         }
         CancellationToken m_Token;
-        CancellationTokenRegistration m_TokenCancelledRegistration;
         ProcessStartInfo m_StartInfo;
         TaskCompletionSource<int> m_ProcessTask = new TaskCompletionSource<int>(TaskContinuationOptions.RunContinuationsAsynchronously);
         Task m_InternalTask;
@@ -75,7 +74,7 @@ namespace AsyncProcessExecutor
                 {
                     while (true)
                     {
-                        var bytesread = await m_Process.StandardOutput.BaseStream.ReadAsync(buf, 0, 1024).ConfigureAwait(false);
+                        var bytesread = await m_Process.StandardOutput.BaseStream.ReadAsync(buf, 0, 1024, m_Token).ConfigureAwait(false);
                         if (bytesread == 0 && m_Process.HasExited)
                         {
                             break;
@@ -135,40 +134,6 @@ namespace AsyncProcessExecutor
                     m_StandardErrorPipe.Complete();
                     ArrayPool<byte>.Shared.Return(buf);
                 }
-                // return Task.Run(async () =>
-                // {
-                //     var buf = ArrayPool<byte>.Shared.Rent(1024);
-                //     try
-                //     {
-                //         while (!m_Token.IsCancellationRequested)
-                //         {
-                //             var bytesread = await m_Process.StandardError.BaseStream.ReadAsync(buf, 0, 1024);
-                //             if (bytesread == 0 && m_Process.HasExited)
-                //             {
-                //                 break;
-                //             }
-                //             await m_StandardErrorPipe.WriteAsync(new Memory<byte>(buf, 0, bytesread), m_Token).ConfigureAwait(false);
-                //             await m_StandardErrorPipe.FlushAsync(m_Token).ConfigureAwait(false);
-                //         }
-                //     }
-                //     finally
-                //     {
-                //         ArrayPool<byte>.Shared.Return(buf);
-                //     }
-                // }).ContinueWith(t =>
-                // {
-                //     if (m_StandardErrorPipe != null)
-                //     {
-                //         if (t.IsFaulted)
-                //         {
-                //             m_StandardErrorPipe.Complete(t.Exception);
-                //         }
-                //         else
-                //         {
-                //             m_StandardErrorPipe.Complete();
-                //         }
-                //     }
-                // });
             }
         }
         async ValueTask InputTask()
@@ -185,10 +150,10 @@ namespace AsyncProcessExecutor
                             foreach (var rbuf in std.Buffer)
                             {
 #if NETCOREAPP2_1
-                            m_Process.StandardInput.BaseStream.Write(rbuf.Span);
+                                m_Process.StandardInput.BaseStream.Write(rbuf.Span);
 #else
                                 var data = rbuf.ToArray();
-                                m_Process.StandardInput.BaseStream.Write(data, 0, data.Length);
+                                await m_Process.StandardInput.BaseStream.WriteAsync(data, 0, data.Length, m_Token).ConfigureAwait(false);
 #endif
                             }
                             m_StandardInput.AdvanceTo(std.Buffer.End);
@@ -306,10 +271,16 @@ namespace AsyncProcessExecutor
             {
                 if (disposing)
                 {
-                    if (m_Process != null)
+                    try
                     {
-                        m_Process.Dispose();
+                        if (m_Process != null)
+                        {
+                            m_Process.Dispose();
+                        }
+                        m_StandardErrorPipe?.Complete();
+                        m_StandardOutputPipe?.Complete();
                     }
+                    catch { }
                 }
 
                 disposedValue = true;

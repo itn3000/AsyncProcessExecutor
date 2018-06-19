@@ -169,7 +169,6 @@ namespace AsyncProcessExecutor
             pi.RedirectStandardOutput = stdout != null;
             using (var proc = new Process())
             using (var sem = new SemaphoreSlim(0, 1))
-            using (ctoken.Register(() => sem.Release()))
             {
                 try
                 {
@@ -238,34 +237,10 @@ namespace AsyncProcessExecutor
                     }
                     if (stdin != null)
                     {
-                        while (true)
-                        {
-                            var readresult = await stdin.ReadAsync().ConfigureAwait(false);
-                            if (!readresult.Buffer.IsEmpty)
-                            {
-                                foreach (var rbuf in readresult.Buffer)
-                                {
-                                    var stdinbuf = ArrayPool<byte>.Shared.Rent(rbuf.Length);
-                                    try
-                                    {
-                                        rbuf.CopyTo(new Memory<byte>(stdinbuf));
-                                        proc.StandardInput.BaseStream.Write(stdinbuf, 0, rbuf.Length);
-                                    }
-                                    finally
-                                    {
-                                        ArrayPool<byte>.Shared.Return(stdinbuf);
-                                    }
-                                }
-                            }
-                            if (readresult.IsCompleted && readresult.Buffer.IsEmpty)
-                            {
-                                break;
-                            }
-                            stdin.AdvanceTo(readresult.Buffer.End);
-                        }
-                        proc.StandardInput.Dispose();
+                        await InputTask(proc, stdin, ctoken).ConfigureAwait(false);
                     }
-                    await sem.WaitAsync().ConfigureAwait(false);
+                    await sem.WaitAsync(ctoken).ConfigureAwait(false);
+                    // flushing output buffer
                     proc.WaitForExit();
                     if (pi.RedirectStandardError)
                     {
@@ -290,8 +265,10 @@ namespace AsyncProcessExecutor
                         return -1;
                     }
                 }
-                catch
+                catch(Exception e)
                 {
+                    stderr?.Complete(e);
+                    stdout?.Complete(e);
                     try
                     {
                         if (!leaveProcess && !proc.HasExited)
@@ -303,6 +280,9 @@ namespace AsyncProcessExecutor
                     {
                     }
                     throw;
+                }
+                finally
+                {
                 }
             }
         }

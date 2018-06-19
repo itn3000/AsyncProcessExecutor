@@ -95,21 +95,18 @@ namespace AsyncProcessExecutor.Test
         {
             var procname1 = "powershel";
             var arg1 = "\"Write-Host hogehoge\"";
-            Assert.Throws<System.ComponentModel.Win32Exception>(() =>
+            using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1))
             {
-                using (var proc = AsyncProcessUtil.StartProcess(procname1, arg1))
+                try
                 {
-                    try
-                    {
-                        proc.WaitExit().Wait();
-                        Assert.Fail("should not be reached");
-                    }
-                    catch (AggregateException ae)
-                    {
-                        throw ae.InnerException;
-                    }
+                    proc.WaitExit().Wait();
+                    Assert.Fail("should not be reached");
                 }
-            });
+                catch (AggregateException ae)
+                {
+                    Assert.IsTrue(ae.Flatten().InnerExceptions.Any(x => x is System.ComponentModel.Win32Exception));
+                }
+            }
         }
         [TestCase]
         public void TestPipeCommandCancel()
@@ -124,16 +121,16 @@ namespace AsyncProcessExecutor.Test
                 try
                 {
                     var code = proc.WaitExit().Result;
-                    Assert.Fail();
+                    Assert.Fail("should not be reached");
                 }
-                catch(AggregateException ae)
+                catch (AggregateException ae)
                 {
                     ae = ae.Flatten();
                     Assert.IsTrue(ae.InnerExceptions.OfType<TaskCanceledException>().Any());
                 }
                 catch (TaskCanceledException)
                 {
-
+                    // TaskCanceledException is expected
                 }
             }
         }

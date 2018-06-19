@@ -18,7 +18,12 @@ namespace AsyncProcessExecutor.Test
                     {
                         foreach (var rbuf in readresult.Buffer)
                         {
+                            #if NETCOREAPP_2_1
                             mstm.Write(rbuf.Span);
+                            #else
+                            var data = rbuf.Span.ToArray();
+                            mstm.Write(data, 0, data.Length);
+                            #endif
                         }
                         reader.AdvanceTo(readresult.Buffer.End);
                     }
