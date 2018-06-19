@@ -10,17 +10,13 @@ namespace AsyncProcessExecutor
     using System.IO;
     using System.IO.Pipelines;
     using System.Diagnostics;
+    /// <summary>asynchronous process context, created by AsyncProcessUtil.StartProcess or DoNext</summary>
+    /// <remarks>You should wait by WaitExit()</remarks>
     public class AsyncProcessContext : IDisposable
     {
+        /// <summary>call when process exit or cancelled</summary>
         public event Action<int> Exited;
 
-        CancellationToken Token
-        {
-            get
-            {
-                return m_Token;
-            }
-        }
         public string FileName
         {
             get
@@ -35,7 +31,6 @@ namespace AsyncProcessExecutor
                 return m_StartInfo.Arguments;
             }
         }
-        IReadOnlyDictionary<string, string> m_Environments;
         public IReadOnlyDictionary<string, string> Environments
         {
             get
@@ -43,6 +38,7 @@ namespace AsyncProcessExecutor
                 return m_Environments;
             }
         }
+        /// <summary>process exit code, if process does not finish, return -1</summary>
         public int ResultCode
         {
             get
@@ -57,10 +53,20 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        /// <summary>wait process and get exit code</summary>
+        /// <remarks>if cancel or error in executing process, throw exceptions.</remarks>
         public Task<int> WaitExit()
         {
             return m_ProcessTask.Task;
         }
+        CancellationToken Token
+        {
+            get
+            {
+                return m_Token;
+            }
+        }
+        IReadOnlyDictionary<string, string> m_Environments;
         CancellationToken m_Token;
         ProcessStartInfo m_StartInfo;
         TaskCompletionSource<int> m_ProcessTask = new TaskCompletionSource<int>(TaskContinuationOptions.RunContinuationsAsynchronously);
@@ -180,6 +186,7 @@ namespace AsyncProcessExecutor
                 }
             }
         }
+        /// <summary>start process executing task</summary>
         async Task StartTask()
         {
             try
@@ -265,6 +272,19 @@ namespace AsyncProcessExecutor
         #region IDisposable Support
         private bool disposedValue = false; // 重複する呼び出しを検出するには
 
+        bool TryPipeWriterComplete(PipeWriter reader)
+        {
+            try
+            {
+                reader?.Complete();
+            }
+            catch
+            {
+                return false;
+            }
+            return true;
+        }
+
         protected virtual void Dispose(bool disposing)
         {
             if (!disposedValue)
@@ -275,10 +295,16 @@ namespace AsyncProcessExecutor
                     {
                         if (m_Process != null)
                         {
+                            if (!m_Process.HasExited)
+                            {
+                                try
+                                {
+                                    m_Process.Kill();
+                                }
+                                catch { }
+                            }
                             m_Process.Dispose();
                         }
-                        m_StandardErrorPipe?.Complete();
-                        m_StandardOutputPipe?.Complete();
                     }
                     catch { }
                 }
@@ -288,19 +314,10 @@ namespace AsyncProcessExecutor
         }
 
 
-        // TODO: 上の Dispose(bool disposing) にアンマネージ リソースを解放するコードが含まれる場合にのみ、ファイナライザーをオーバーライドします。
-        // ~AsyncProcessContext() {
-        //   // このコードを変更しないでください。クリーンアップ コードを上の Dispose(bool disposing) に記述します。
-        //   Dispose(false);
-        // }
-
-        // このコードは、破棄可能なパターンを正しく実装できるように追加されました。
         public void Dispose()
         {
-            // このコードを変更しないでください。クリーンアップ コードを上の Dispose(bool disposing) に記述します。
             Dispose(true);
-            // TODO: 上のファイナライザーがオーバーライドされる場合は、次の行のコメントを解除してください。
-            //GC.SuppressFinalize(this);
+            GC.SuppressFinalize(this);
         }
         #endregion
     }
