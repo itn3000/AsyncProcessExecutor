@@ -9,55 +9,154 @@ namespace AsyncProcessExecutor
     using System.Diagnostics;
     using System.Threading;
     using System.IO;
+    using System.IO.Pipelines;
+    using System.Buffers;
     public static class AsyncProcessUtil
     {
         /// <summary>
-        /// Execute process asynchronously
+        /// Execute process asynchronously, with stdout/stderr string encoded
+        /// </summary>
+        /// <param name="fileName">execute file path</param>
+        /// <param name="args">execute argument</param>
+        /// <param name="stdin">standard input pipe</param>
+        /// <param name="stderr">standard error output pipe</param>
+        /// <param name="stdout">standard output pipe</param>
+        /// <param name="token">for cancelling execution</param>
+        /// <param name="createNoWindow">flag for create window</param>
+        /// <param name="leaveProcess">if true,leave process running when cancelled</param>
+        /// <param name="env">additional environment variables</param>
+        /// <returns>return exit code if process finished</returns>
+        public static async Task<int> ExecuteProcessAsyncBinary(string fileName,
+            string args,
+            bool createNoWindow = true,
+            IReadOnlyDictionary<string, string> env = null,
+            PipeWriter stdout = null,
+            PipeWriter stderr = null,
+            PipeReader stdin = null,
+            CancellationToken token = default(CancellationToken),
+            bool leaveProcess = false
+        )
+        {
+            var si = CreateStartInfo(fileName, args, createNoWindow, stdin, Encoding.UTF8, env);
+            si.RedirectStandardError = stderr != null;
+            si.RedirectStandardOutput = stdout != null;
+            si.RedirectStandardInput = stdin != null;
+            si.UseShellExecute = false;
+            using (var proc = new Process())
+            using (var csrc = new CancellationTokenSource())
+            using (var combined = CancellationTokenSource.CreateLinkedTokenSource(token, csrc.Token))
+            {
+                proc.StartInfo = si;
+                proc.EnableRaisingEvents = true;
+                proc.Exited += (sender, ev) =>
+                {
+                    csrc.Cancel();
+                };
+                if (!proc.Start())
+                {
+                    throw new InvalidOperationException("executing process failed");
+                }
+                await Task.WhenAll(
+                    stdout != null ? OutputTask(proc, stdout, proc.StandardOutput.BaseStream, token) : Task.CompletedTask,
+                    stderr != null ? OutputTask(proc, stderr, proc.StandardError.BaseStream, token) : Task.CompletedTask,
+                    stdin != null ? InputTask(proc, stdin, token) : Task.CompletedTask
+                    ,
+                    Task.Run(() =>
+                    {
+                        combined.Token.WaitHandle.WaitOne();
+                    })
+                );
+                if(!proc.HasExited)
+                {
+                    if(!leaveProcess)
+                    {
+                        proc.Kill();
+                    }
+                    throw new TaskCanceledException();
+                }
+                // flush output
+                proc.WaitForExit();
+                return proc.ExitCode;
+            }
+        }
+        /// <summary>
+        /// Execute process asynchronously, with stdout/stderr string encoded
         /// </summary>
         /// <param name="fileName">execute file path</param>
         /// <param name="arg">execute argument</param>
-        /// <param name="outputEncoding">process output encoding</param>
-        /// <param name="inputCallback">callback for input standard input(invoke only once when process started)</param>
-        /// <param name="onOutput">callback for process standard output</param>
-        /// <param name="onErrorOutput">callback for process standard error output</param>
+        /// <param name="outputEncoding">process stdout/stderr encoding(default: UTF8)</param>
+        /// <param name="stdin">standard input pipe</param>
+        /// <param name="stderr">standard error output pipe</param>
+        /// <param name="stdout">standard output pipe</param>
         /// <param name="ctoken">for cancelling execution</param>
         /// <param name="createNoWindow">flag for create window</param>
         /// <param name="leaveProcess">if true,leave process running when cancelled</param>
         /// <param name="env">additional environment variables</param>
-        /// <returns>return exit code if process finished,-1 when cancelled</returns>
+        /// <returns>return exit code if process finished</returns>
         public static async Task<int> ExecuteProcessAsync(string fileName
             , string arg
             , Encoding outputEncoding = null
-            , Action<TextWriter> inputCallback = null
-            , Action<string> onOutput = null
-            , Action<string> onErrorOutput = null
+            , PipeWriter stdout = null
+            , PipeWriter stderr = null
+            , PipeReader stdin = null
             , CancellationToken ctoken = default(CancellationToken)
             , bool createNoWindow = false
             , bool leaveProcess = false
-            , IDictionary<string, string> env = null
+            , IReadOnlyDictionary<string, string> env = null
             )
         {
-            var pi = CreateStartInfo(fileName, arg, createNoWindow, inputCallback, outputEncoding, env);
+            outputEncoding = outputEncoding ?? Encoding.UTF8;
+            var pi = CreateStartInfo(fileName, arg, createNoWindow, stdin, outputEncoding, env);
+            pi.RedirectStandardInput = stdin != null;
+            pi.RedirectStandardError = stderr != null;
+            pi.RedirectStandardOutput = stdout != null;
             using (var proc = new Process())
             using (var sem = new SemaphoreSlim(0, 1))
-            using (ctoken.Register(() => sem.Release()))
             {
                 try
                 {
                     proc.StartInfo = pi;
                     proc.EnableRaisingEvents = true;
-                    if (onOutput != null)
+                    if (stdout != null)
                     {
                         proc.OutputDataReceived += (sender, ev) =>
                         {
-                            onOutput(ev.Data);
+                            if (ev.Data != null)
+                            {
+                                var len = outputEncoding.GetByteCount(ev.Data);
+                                var buf = ArrayPool<byte>.Shared.Rent(len);
+                                try
+                                {
+                                    var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                    stdout.Write(new Span<byte>(buf, 0, bc));
+                                    stdout.FlushAsync().GetAwaiter().GetResult();
+                                }
+                                finally
+                                {
+                                    ArrayPool<byte>.Shared.Return(buf);
+                                }
+                            }
                         };
                     }
-                    if (onErrorOutput != null)
+                    if (stderr != null)
                     {
                         proc.ErrorDataReceived += (sender, ev) =>
                         {
-                            onErrorOutput(ev.Data);
+                            if (ev.Data != null)
+                            {
+                                var len = outputEncoding.GetByteCount(ev.Data);
+                                var buf = ArrayPool<byte>.Shared.Rent(len);
+                                try
+                                {
+                                    var bc = outputEncoding.GetBytes(ev.Data, 0, ev.Data.Length, buf, 0);
+                                    stderr.Write(new Span<byte>(buf, 0, bc));
+                                    stderr.FlushAsync().GetAwaiter().GetResult();
+                                }
+                                finally
+                                {
+                                    ArrayPool<byte>.Shared.Return(buf);
+                                }
+                            }
                         };
                     }
                     proc.Exited += (sender, ev) =>
@@ -71,25 +170,37 @@ namespace AsyncProcessExecutor
                         }
                     };
                     proc.Start();
-                    proc.BeginErrorReadLine();
-                    proc.BeginOutputReadLine();
-                    if (inputCallback != null)
+                    if (pi.RedirectStandardError)
                     {
-                        await Task.Run(() =>
-                        {
-                            inputCallback(proc.StandardInput);
-                        }).ConfigureAwait(false);
-                        proc.StandardInput.Dispose();
+                        proc.BeginErrorReadLine();
                     }
-                    await sem.WaitAsync().ConfigureAwait(false);
+                    if (pi.RedirectStandardOutput)
+                    {
+                        proc.BeginOutputReadLine();
+                    }
+                    if (stdin != null)
+                    {
+                        await InputTask(proc, stdin, ctoken).ConfigureAwait(false);
+                    }
+                    await sem.WaitAsync(ctoken).ConfigureAwait(false);
+                    // flushing output buffer
+                    proc.WaitForExit();
+                    if (pi.RedirectStandardError)
+                    {
+                        proc.CancelErrorRead();
+                        stderr.Complete();
+                    }
+                    if (pi.RedirectStandardOutput)
+                    {
+                        proc.CancelOutputRead();
+                        stdout.Complete();
+                    }
                     if (proc.HasExited)
                     {
                         return proc.ExitCode;
                     }
                     else
                     {
-                        proc.CancelErrorRead();
-                        proc.CancelOutputRead();
                         if (!leaveProcess)
                         {
                             proc.Kill();
@@ -97,8 +208,10 @@ namespace AsyncProcessExecutor
                         return -1;
                     }
                 }
-                catch
+                catch (Exception e)
                 {
+                    stderr?.Complete(e);
+                    stdout?.Complete(e);
                     try
                     {
                         if (!leaveProcess && !proc.HasExited)
@@ -111,6 +224,9 @@ namespace AsyncProcessExecutor
                     }
                     throw;
                 }
+                finally
+                {
+                }
             }
         }
         /// <summary>
@@ -118,118 +234,26 @@ namespace AsyncProcessExecutor
         /// </summary>
         /// <param name="fileName">path to process binary file</param>
         /// <param name="arg">process arguments</param>
-        /// <param name="inputCallback">call when process begin,passed write-only stream</param>
-        /// <param name="onOutput">callback to get standard output data</param>
-        /// <param name="onOutputError">callback to get standard error data</param>
+        /// <param name="stdin">standard input pipe</param>
+        /// <param name="stderr">standard error output pipe</param>
         /// <param name="ctoken">if you want to cancel process, pass the CancellationToken</param>
         /// <param name="createNoWindow">flag for creating window(affected only windows)</param>
         /// <param name="leaveProcess">flag for not killing process when cancelled</param>
         /// <param name="env">additional environments for process</param>
-        /// <param name="bufferSize">buffer size for output</param>
-        /// <returns>process exit code, -1 when cancelled</returns>
-        public static async Task<int> ExecuteProcessAsyncBinary(string fileName
-            , string arg
-            , Action<Stream> inputCallback = null
-            , Action<byte[]> onOutput = null
-            , Action<byte[]> onOutputError = null
-            , CancellationToken ctoken = default(CancellationToken)
-            , bool createNoWindow = true
-            , bool leaveProcess = false
-            , IDictionary<string, string> env = null
-            , int bufferSize = 4096)
+        /// <returns>process exit code</returns>
+        public static AsyncProcessContext StartProcess(string fileName,
+            string arguments,
+            bool createNoWindow = true,
+            IReadOnlyDictionary<string, string> env = null,
+            PipeReader stdin = null,
+            PipeWriter stderr = null,
+            CancellationToken token = default(CancellationToken))
         {
-            var pi = CreateStartInfo(fileName, arg, createNoWindow, null, null, env);
-            pi.RedirectStandardError = onOutputError != null;
-            pi.RedirectStandardInput = inputCallback != null;
-            pi.RedirectStandardOutput = onOutput != null;
-            using (var proc = new Process())
-            using (var sem = new SemaphoreSlim(0, 1))
-            using (ctoken.Register(() => sem.Release()))
-            {
-                try
-                {
-                    proc.StartInfo = pi;
-                    proc.Exited += (sender, e) =>
-                    {
-                        try
-                        {
-                            sem.Release();
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    proc.EnableRaisingEvents = true;
-                    proc.Start();
-                    var inputTask = Task.Run(async () =>
-                    {
-                        await Task.FromResult(0).ConfigureAwait(false);
-                        if (inputCallback != null)
-                        {
-                            inputCallback(proc.StandardInput.BaseStream);
-                            proc.StandardInput.Dispose();
-                        }
-                    });
-                    var outputTask = Task.Run(async () =>
-                    {
-                        if (onOutput != null)
-                        {
-                            await ReadStreamUntilCancel(proc.StandardOutput.BaseStream, onOutput, bufferSize, ctoken).ConfigureAwait(false);
-                        }
-                    });
-                    var errorOutTask = Task.Run(async () =>
-                    {
-                        if (onOutputError != null)
-                        {
-                            await ReadStreamUntilCancel(proc.StandardError.BaseStream, onOutputError, bufferSize, ctoken).ConfigureAwait(false);
-                        }
-                    });
-                    await sem.WaitAsync().ConfigureAwait(false);
-                    await Task.WhenAll(inputTask, outputTask, errorOutTask).ConfigureAwait(false);
-                    if (proc.HasExited)
-                    {
-                        return proc.ExitCode;
-                    }
-                    else
-                    {
-                        return -1;
-                    }
-                }
-                finally
-                {
-                    if (!leaveProcess && !proc.HasExited)
-                    {
-                        proc.Kill();
-                    }
-                }
-            }
-        }
-        /// <summary>
-        /// start process and creating process context object
-        /// </summary>
-        /// <param name="fileName"></param>
-        /// <param name="arguments"></param>
-        /// <param name="createNoWindow"></param>
-        /// <param name="env"></param>
-        /// <param name="inputCallback"></param>
-        /// <param name="errorOutputCallback"></param>
-        /// <param name="ctoken"></param>
-        /// <returns></returns>
-        public static AsyncProcessContext StartProcess(
-            string fileName
-            , string arguments
-            , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> inputCallback = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
-            , CancellationToken ctoken = default(CancellationToken))
-        {
-            var pi = CreateStartInfo(fileName, arguments, createNoWindow, null, null, env);
-            pi.RedirectStandardError = true;
-            pi.RedirectStandardInput = true;
+            var pi = CreateStartInfo(fileName, arguments, createNoWindow, stdin, null, env);
+            pi.RedirectStandardError = stderr != null;
+            pi.RedirectStandardInput = stdin != null;
             pi.RedirectStandardOutput = true;
-            var ret = new AsyncProcessContext(pi, ctoken, inputCallback, errorOutputCallback);
-            return ret;
+            return new AsyncProcessContext(pi, token, stdin, stderr);
         }
         /// <summary>
         /// extension method for fluent process execution,all standard output in AsyncProcessContext is redirected to next process standard input
@@ -240,86 +264,114 @@ namespace AsyncProcessExecutor
         /// <param name="arg">next process argument</param>
         /// <param name="createNoWindow">flag for creating window</param>
         /// <param name="env">additional environment variables for process</param>
-        /// <param name="errorOutputCallback">standard error callback for next process</param>
+        /// <param name="stderr">standard error output pipe</param>
         /// <param name="ctoken">used for cancel process</param>
         /// <returns>next process AsyncProcessContext</returns>
         public static AsyncProcessContext DoNext(this AsyncProcessContext t, string fileName, string arg
             , bool createNoWindow = true
-            , IDictionary<string, string> env = null
-            , Func<Stream, CancellationToken, Task> errorOutputCallback = null
+            , IReadOnlyDictionary<string, string> env = null
+            , PipeWriter stderr = null
             , CancellationToken ctoken = default(CancellationToken))
         {
-            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, inputCallback: async (stm, token) =>
-            {
-                await t.StandardOutput.CopyToAsync(stm, 4096, token).ConfigureAwait(false);
-            }, errorOutputCallback: errorOutputCallback, ctoken: ctoken);
-            newProc.Exited += (code) =>
-            {
-                t.Dispose();
-            };
+            var newProc = StartProcess(fileName, arg, createNoWindow: createNoWindow, env: env, stdin: t.StandardOutput, stderr: stderr, token: ctoken);
+            newProc.Exited += (exitCode) => t.Dispose();
             return newProc;
         }
         static ProcessStartInfo CreateStartInfo(
             string fileName
             , string arg
             , bool createNoWindow
-            , Action<TextWriter> inputCallback
+            , PipeReader stdin
             , Encoding outputEncoding
-            , IDictionary<string, string> env)
+            , IReadOnlyDictionary<string, string> env)
         {
             var pi = new ProcessStartInfo(fileName, arg);
             pi.CreateNoWindow = createNoWindow;
             pi.UseShellExecute = false;
             pi.RedirectStandardError = true;
             pi.RedirectStandardOutput = true;
-            pi.RedirectStandardInput = inputCallback != null;
-            if (outputEncoding != null)
-            {
-                pi.StandardErrorEncoding = outputEncoding;
-                pi.StandardOutputEncoding = outputEncoding;
-            }
+            pi.RedirectStandardInput = stdin != null;
             if (env != null)
             {
                 foreach (var kv in env)
                 {
-#if NET45
-                    pi.EnvironmentVariables[kv.Key] = kv.Value;
-#else
                     pi.Environment[kv.Key] = kv.Value;
-#endif
                 }
             }
             return pi;
         }
-        static async Task ReadStreamUntilCancel(Stream stm, Action<byte[]> callBack, int bufferSize, CancellationToken ctoken)
+        static async Task OutputTask(Process proc, PipeWriter output, Stream stm, CancellationToken token)
         {
-            if (callBack != null)
+            if (output == null)
             {
-                var buf = new byte[bufferSize];
-                try
+                return;
+            }
+            var buf = ArrayPool<byte>.Shared.Rent(4096);
+            try
+            {
+                long total = 0;
+                while (true)
                 {
-                    while (!ctoken.IsCancellationRequested)
-                    {
-                        var bytesread = await stm.ReadAsync(buf, 0, bufferSize, ctoken).ConfigureAwait(false);
-                        if (bytesread <= 0)
-                        {
-                            break;
-                        }
-                        callBack(buf.Take(bytesread).ToArray());
-                    }
-                }
-                catch (AggregateException e)
-                {
-                    if (e.InnerException is OperationCanceledException)
+                    var bytesread = await stm.ReadAsync(buf, 0, 4096, token).ConfigureAwait(false);
+                    if (bytesread <= 0)
                     {
                         return;
                     }
-                    else
+                    output.Write(new Span<byte>(buf, 0, bytesread));
+                    total += bytesread;
+                    if (total > 4096)
                     {
-                        throw;
+                        await output.FlushAsync(token).ConfigureAwait(false);
                     }
                 }
             }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buf);
+                output.Complete();
+            }
+        }
+        static async Task InputTask(Process proc, PipeReader stdin, CancellationToken token)
+        {
+            if (stdin == null)
+            {
+                return;
+            }
+            while (true)
+            {
+                var readresult = await stdin.ReadAsync(token).ConfigureAwait(false);
+                if (!readresult.Buffer.IsEmpty)
+                {
+                    foreach (var rbuf in readresult.Buffer)
+                    {
+#if NETCOREAPP_2_1
+                        proc.StandardInput.BaseStream.Write(rbuf.Span);
+#else
+                        var buf = ArrayPool<byte>.Shared.Rent(rbuf.Length);
+                        try
+                        {
+                            rbuf.CopyTo(new Memory<byte>(buf));
+                            proc.StandardInput.BaseStream.Write(buf, 0, rbuf.Length);
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine($"{e}");
+                            throw;
+                        }
+                        finally
+                        {
+                            ArrayPool<byte>.Shared.Return(buf);
+                        }
+#endif
+                    }
+                    stdin.AdvanceTo(readresult.Buffer.End);
+                }
+                if (readresult.IsCompleted && readresult.Buffer.IsEmpty)
+                {
+                    break;
+                }
+            }
+            proc.StandardInput.Close();
         }
     }
 }

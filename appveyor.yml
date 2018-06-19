@@ -1,0 +1,12 @@
+version: 1.0.{build}
+skip_tags: true
+image: Visual Studio 2017
+before_build:
+- cmd: dotnet restore
+build:
+  publish_nuget: true
+  publish_nuget_symbols: true
+  verbosity: minimal
+after_build:
+- cmd: dotnet pack -c Release AsyncProcessExecutor/AsyncProcessExecutor.csproj
+deploy: off
