@@ -2,9 +2,11 @@
 
 executing process asynchronous library
 
-## Requirements
+## Requirements for using
 
-* .NET Framework 4.5 or later
+* following versions are supported
+    * netstandard2.0(.NET Framework 4.6.1 or later, netcoreapp2.0)
+    * netcoreapp2.1(for Span)
 * Nuget 2.12 or later for nuget
 
 ## Installation
