@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <AssemblyTitle>Asynchronous Process Executing Library</AssemblyTitle>
-    <VersionPrefix>2.0.0</VersionPrefix>
+    <VersionPrefix>2.0.1</VersionPrefix>
     <Authors>itn3000</Authors>
     <TargetFrameworks>netstandard2.0;netcoreapp2.1</TargetFrameworks>
     <AssemblyName>AsyncProcessExecutor</AssemblyName>
