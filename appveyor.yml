@@ -10,7 +10,8 @@ build:
 after_build:
 - cmd: dotnet pack -c Release AsyncProcessExecutor/AsyncProcessExecutor.csproj
 deploy: off
-test:
-  assemblies:
-    only:
-    - AsyncProcessExecutor.Test/**/*.dll
+test_script:
+- pwsh: >-
+    cd AsyncProcessExecutor.Test
+
+    dotnet test
