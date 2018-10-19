@@ -2,17 +2,35 @@ version: 1.0.{build}
 skip_tags: true
 image: Visual Studio 2017
 before_build:
-- cmd: dotnet restore
+  - cmd: dotnet restore
 build:
   project: AsyncProcessExecutor.sln
   publish_nuget: true
   publish_nuget_symbols: true
   verbosity: minimal
 after_build:
-- cmd: dotnet pack -c Release AsyncProcessExecutor/AsyncProcessExecutor.csproj
-deploy: off
+  - cmd: dotnet pack -c Release AsyncProcessExecutor/AsyncProcessExecutor.csproj
+artifacts:
+  - path: '**/*.nupkg'
+    name: NuGetPackages
+deploy:
+  - provider: NuGet
+    api_key:
+      secure: d1XW1IBAU4GVpSt5/P58qVTuaRbMU2EtT1XpYGGAsrWzb//dzFkJGYO1HONsQ/dW
+    on:
+      APPVEYOR_REPO_TAG: true
+    artifact: NuGetPackages
+  - provider: GitHub
+    auth_token:
+      secure: VO7JazH8iheMwssIPuXQE7uEOqaoHvdpvqfgBg9pDcVhx2qosCGlxeurzjSm4rOr
+    artifact: NuGetPackages
+    draft: false
+    prerelease: false
+    on:
+      branch: master
+      APPVEYOR_REPO_TAG: true
 test_script:
-- pwsh: >-
-    cd AsyncProcessExecutor.Test
-
-    dotnet test
+  - pwsh: >-
+      cd AsyncProcessExecutor.Test
+  
+      dotnet test
