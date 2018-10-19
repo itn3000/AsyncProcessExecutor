@@ -9,7 +9,7 @@ build:
   publish_nuget_symbols: true
   verbosity: minimal
 after_build:
-  - cmd: dotnet pack -c Release AsyncProcessExecutor/AsyncProcessExecutor.csproj
+  - cmd: dotnet pack -c Release --include-symbols AsyncProcessExecutor/AsyncProcessExecutor.csproj
 artifacts:
   - path: '**/*.nupkg'
     name: NuGetPackages
@@ -19,7 +19,7 @@ deploy:
       secure: d1XW1IBAU4GVpSt5/P58qVTuaRbMU2EtT1XpYGGAsrWzb//dzFkJGYO1HONsQ/dW
     on:
       APPVEYOR_REPO_TAG: true
-    artifact: NuGetPackages
+    artifacts: NuGetPackages
   - provider: GitHub
     auth_token:
       secure: VO7JazH8iheMwssIPuXQE7uEOqaoHvdpvqfgBg9pDcVhx2qosCGlxeurzjSm4rOr
@@ -32,5 +32,5 @@ deploy:
 test_script:
   - pwsh: >-
       cd AsyncProcessExecutor.Test
-  
+
       dotnet test
